@@ -8,10 +8,7 @@ class Node(object):
         self.value = value
 
     def evaluate(self):
-        return set([child.evaluate()
-                    if child.children
-                    else child.value
-                    for child in self.children])
+        return list(_get_node_values(self))
 
     def add_children(self, children):
         """ add one or more children
@@ -22,6 +19,12 @@ class Node(object):
         else:
             self.children.append(children)
 
+    def get_children(self):
+        return self.children
+
+    def get_parent(self):
+        return self.parent
+
     def complement(self):
         return self.parent.evaluate - self.evaluate
 
@@ -29,23 +32,35 @@ class Node(object):
         self.value = value
 
 
+def _get_node_values(node):
+    try:
+        if not node.children:
+            raise StopIteration
+        for child_node in node.children:
+            for element in _get_node_values(child_node):
+                yield element
+    except StopIteration:
+        yield node.value
+
+
 class HTree(object):
-    def __init__(self, root=None, tree_list=None):
-        self.root = root
-        self.tree_list = tree_list
-        self.expand()
-
-    def expand(self):
-        """ get the root node right, develop the tree using transform()
+    def __init__(self, root=None, children=[]):
+        """ hierarchical tree object with 'parent' root and children trees
         """
-        if (not isinstance(self.tree_list, collections.Iterable)
-                or len(self.tree_list) == 1):
-            self.root_ = Node(parent=self.root, value=self.tree_list,
-                              children=[])
-        else:
-            self.root_ = Node(parent=self.root)
+        self.root = root
+        self.children = children
 
-            children = [HTree(root=self.root_, tree_list=tree).root_
-                        for tree in self.tree_list]
-            self.root_.add_children(children)
+    def tree(self, tree_list):
+        """ scan a list of lists to form a tree
+        """
+        if isinstance(tree_list, collections.Iterable) and len(tree_list) > 1:
+            root_ = Node(parent=self.root,
+                         children=[])
+            child_nodes = [HTree(root=root_).tree(t).root_
+                           for t in tree_list]
+            root_.add_children(child_nodes)
+            self.root_ = root_
+        else:
+            self.root_ = Node(parent=self.root, value=tree_list,
+                              children=[])
         return self
