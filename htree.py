@@ -9,12 +9,12 @@ class Node(object):
         self.value = value
 
     def evaluate(self):
-        return list(_get_node_values(self))
+        return tuple(list(_get_node_values(self)))
 
     def add_children(self, children):
         """ add one or more children
         """
-        print "adding children {} to {}".format(children, self)
+        # print "adding children {} to {}".format(children, self)
         if isinstance(children, collections.Iterable):
             self.children.extend(children)
         else:
@@ -27,10 +27,14 @@ class Node(object):
         return self.parent
 
     def complement(self):
-        return self.parent.evaluate - self.evaluate
+        return set([child.evaluate() for child in self.parent.children]) -\
+            set([self.evaluate()])
 
     def set_value(self, value):
-        self.value = value
+        self.value_ = value
+
+    def _set_level(self, level):
+        self.level_ = level
 
 
 def _get_node_values(node):
@@ -44,6 +48,20 @@ def _get_node_values(node):
         yield node.value
 
 
+def _get_node_list(node, level=0):
+    """ returns list of nodes and their level in the tree (root level = 0)
+    """
+    yield (node, level)
+    try:
+        if not node.children:
+            raise StopIteration
+        for child_node in node.children:
+            for element in _get_node_list(child_node, level=level + 1):
+                yield (element[0], element[1])
+    except StopIteration:
+        return
+
+
 class HTree(object):
     def __init__(self, root=None):
         """ hierarchical tree object with 'parent'
@@ -51,7 +69,7 @@ class HTree(object):
         self.root = root
 
     def tree(self, tree_list):
-        """ scan a list of lists to form a tree
+        """ scan a nested list to form a tree
         """
         if isinstance(tree_list, collections.Iterable) and len(tree_list) > 1:
             root_ = Node(parent=self.root,
@@ -64,6 +82,21 @@ class HTree(object):
             self.root_ = Node(parent=self.root, value=tree_list,
                               children=[])
         return self
+
+    def _update(self):
+        """ update node values setting its level and value
+        """
+        for (node, node_level) in _get_node_list(self.root_):
+            node.set_value(node.evaluate())
+            node._set_level(node_level)
+        return self
+
+    def get_nodes(self):
+        self._update()
+        nodes = []
+        for (node, _) in _get_node_list(self.root_):
+            nodes.append(node)
+        return nodes
 
 
 class HierarchicalKMeans(KMeans):
