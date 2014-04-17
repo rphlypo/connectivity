@@ -44,11 +44,10 @@ def _get_node_values(node):
 
 
 class HTree(object):
-    def __init__(self, root=None, children=[]):
-        """ hierarchical tree object with 'parent' root and children trees
+    def __init__(self, root=None):
+        """ hierarchical tree object with 'parent'
         """
         self.root = root
-        self.children = children
 
     def tree(self, tree_list):
         """ scan a list of lists to form a tree
