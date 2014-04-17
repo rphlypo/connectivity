@@ -16,6 +16,31 @@ fast_logdet = sklearn.utils.extmath.fast_logdet
 
 class GraphLasso(EmpiricalCovariance):
     """ the estimator class for GraphLasso based on ADMM
+
+    arguments
+    ---------
+        alpha: scalar or postive matrix
+            the penalisation parameter
+
+        tol: scalar
+            tolerance to declare convergence
+
+        max_iter: unsigned int
+            maximum number of iterations until convergence
+
+        verbose: unsigned int
+            set to 0 for no verbosity
+            see logger.setLevel for more information
+
+        base_estimator: instance of covariance estimator class
+            this estimator will be used to estimate the covariance from the
+            data both in fit and score
+
+        scale_2_corr: boolean
+            whether correlation or covariance is to be used
+
+        rho: positive scalar
+            ressemblance enforcing penalty between split variables
     """
     def __init__(self, alpha, tol=1e-6, max_iter=100, verbose=0,
                  base_estimator=None,
@@ -31,14 +56,7 @@ class GraphLasso(EmpiricalCovariance):
         self.store_precision = True
 
     def fit(self, X, y=None, **kwargs):
-        if self.base_estimator is None:
-            self.base_estimator_ = EmpiricalCovariance(assume_centered=True)
-        else:
-            self.base_estimator_ = clone(self.base_estimator)
-        logger.setLevel(self.verbose)
-        S = self.base_estimator_.fit(X).covariance_
-        if self.scale_2_corr:
-            S = _cov_2_corr(S)
+        S = self.X_to_cov(X)
         precision_, var_gap_, dual_gap_, f_vals_ =\
             _admm_gl(S, self.alpha, rho=self.rho, tol=self.tol,
                      max_iter=self.max_iter)
@@ -49,6 +67,17 @@ class GraphLasso(EmpiricalCovariance):
         self.dual_gap_ = copy.deepcopy(dual_gap_)
         self.f_vals_ = copy.deepcopy(f_vals_)
         return self
+
+    def X_to_cov(self, X):
+        if self.base_estimator is None:
+            self.base_estimator_ = EmpiricalCovariance(assume_centered=True)
+        else:
+            self.base_estimator_ = clone(self.base_estimator)
+        logger.setLevel(self.verbose)
+        S = self.base_estimator_.fit(X).covariance_
+        if self.scale_2_corr:
+            S = _cov_2_corr(S)
+        return S
 
     def score(self, X_test, y=None):
         """Computes the log-likelihood of a Gaussian data set with
@@ -72,13 +101,16 @@ class GraphLasso(EmpiricalCovariance):
 
         """
         # compute empirical covariance of the test set
-        test_cov = self.base_estimator_.fit(X_test).covariance_
-        if self.scale_2_corr:
-            test_cov = _cov_2_corr(test_cov)
-        # compute log likelihood
-        return log_likelihood(self.precision_, test_cov)
+        if self.score is not None:
+            return self._error_norm(X_test, norm=self.score)
+        else:
+            test_cov = self.base_estimator_.fit(X_test).covariance_
+            if self.scale_2_corr:
+                test_cov = _cov_2_corr(test_cov)
+            # compute log likelihood
+            return log_likelihood(self.precision_, test_cov)
 
-    def error_norm(self, X_test, norm="Fro"):
+    def _error_norm(self, X_test, norm="Fro"):
         """Computes the Mean Squared Error between two covariance estimators.
         (In the sense of the Frobenius norm).
 
@@ -124,7 +156,6 @@ class GraphLasso(EmpiricalCovariance):
             raise NotImplementedError(
                 "Only the following norms are implemented:\n"
                 "spectral, Frobenius, inverse Frobenius, and geodesic")
-
         return error_norm
 
 
@@ -145,16 +176,44 @@ class IPS(GraphLasso):
         self.store_precision = True
 
     def fit(self, X, y=None, **kwargs):
-        if self.base_estimator is None:
-            self.base_estimator_ = EmpiricalCovariance(assume_centered=True)
-        else:
-            self.base_estimator_ = clone(self.base_estimator)
-        logger.setLevel(self.verbose)
-        S = self.base_estimator_.fit(X).covariance_
-        if self.scale_2_corr:
-            S = _cov_2_corr(S)
+        S = self.X_to_cov(X)
         precision_, var_gap_, dual_gap_, f_vals_ =\
             _admm_ips(S, self.support, rho=self.rho, tol=self.tol,
+                      max_iter=self.max_iter)
+
+        self.precision_ = precision_
+        self.covariance_ = linalg.inv(precision_)
+        self.var_gap_ = copy.deepcopy(var_gap_)
+        self.dual_gap_ = copy.deepcopy(dual_gap_)
+        self.f_vals_ = copy.deepcopy(f_vals_)
+        return self
+
+
+class HierarchicalGraphLasso(GraphLasso):
+    def __init__(self, htree, tol=1e-6, max_iter=100, verbose=0,
+                 base_estimator=None, scale_2_corr=True, rho=1., score=None):
+        """ hierarchical version of graph lasso with ell1-2 penalty
+
+        extra arguments
+        ---------------
+        htree: an instance of HTree
+            defines the hierarchical structure over which the objective
+            function is to be optimised
+        """
+        self.htree = htree
+        self.tol = tol
+        self.max_iter = max_iter
+        self.verbose = verbose
+        self.base_estimator = base_estimator
+        self.scale_2_corr = True
+        self.rho = rho
+        # needed for the score function of EmpiricalCovariance
+        self.store_precision = True
+
+    def fit(self, X, y=None, **kwargs):
+        S = self.X_to_cov(X)
+        precision_, var_gap_, dual_gap_, f_vals_ =\
+            _admm_hgl(S, self.support, rho=self.rho, tol=self.tol,
                       max_iter=self.max_iter)
 
         self.precision_ = precision_
@@ -256,6 +315,69 @@ def _admm_ips(S, support, rho=1., tau_inc=2., tau_decr=2., mu=None, tol=1e-6,
             U = U + X - Z
             r_.append(linalg.norm(X - Z) / (p ** 2))
             s_.append(linalg.norm(Z - Z_old) / dof)
+            f_vals_.append(_pen_neg_log_likelihood(X, S))
+
+            if mu is not None:
+                if r_[-1] > mu * s_[-1]:
+                    rho *= tau_inc
+                elif s_[-1] > mu * r_[-1]:
+                    rho /= tau_decr
+            iter_count += 1
+            if r_[-1] < tol or iter_count > max_iter:
+                raise StopIteration
+        except StopIteration:
+            return Z, r_, s_, f_vals_
+
+
+def _admm_hgl(S, htree, alpha, rho=1., tau_inc=2., tau_decr=2., mu=None,
+              tol=1e-6, max_iter=100, Xinit=None):
+    """
+    returns:
+    -------
+    Z       : numpy.ndarray
+        the split variable with correct support
+
+    r_      : list of floats
+        normalised norm of difference between split variables
+
+    s_      : list of floats
+        convergence of the variable Z in normalised norm
+        normalisation is based on division by the number of elements
+    """
+    p = S.shape[0]
+    Z = (1 + rho) * np.identity(p)
+    U = np.zeros((p, p))
+    if Xinit is None:
+        X = np.identity(p)
+    else:
+        X = Xinit
+    r_ = list()
+    s_ = list()
+    f_vals_ = list()
+    r_.append(linalg.norm(X - Z))
+    s_.append(np.inf)
+    f_vals_.append(_pen_neg_log_likelihood(X, S))
+    iter_count = 0
+    while True:
+        try:
+            Z_old = Z.copy()
+            # closed form optimization for X
+            eigvals, eigvecs = linalg.eigh(rho * (Z - U) - S)
+            eigvals_ = np.diag(eigvals + (eigvals ** 2 + 4 * rho) ** (1. / 2))
+            X = eigvecs.dot(eigvals_.dot(eigvecs.T)) / (2 * rho)
+            # proximal operator for Z: projection on support
+            Z = U + X
+            for (node, node_level) in htree._get_node_list(htree.root_):
+                ix = node.evaluate()
+                for ixc in node.complement():
+                    B = (U + X)[np.ix_(ix, ixc)]
+                    B *= (1 - alpha ** node_level / (rho * np.linalg.norm(B)))
+                    Z[np.ix_(ix, ixc)] = B
+                    Z[np.ix_(ixc, ix)] = B.T
+            # update scaled dual variable
+            U = U + X - Z
+            r_.append(linalg.norm(X - Z) / (p ** 2))
+            s_.append(linalg.norm(Z - Z_old))
             f_vals_.append(_pen_neg_log_likelihood(X, S))
 
             if mu is not None:
