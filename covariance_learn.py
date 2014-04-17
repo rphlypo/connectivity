@@ -96,7 +96,6 @@ class GraphLasso(EmpiricalCovariance):
             - 'invFro': sqrt(trace(B.T.dot(B)))
             where A is the error ``(test_covariance - model_covariance)``
             and   B is the error ``(test_precision - model_precision)``
-
         Returns
         -------
         A distance measuring the divergence between the model and the test set
@@ -117,7 +116,7 @@ class GraphLasso(EmpiricalCovariance):
             error_norm = np.sqrt(squared_norm)
         elif norm == "geodesic":
             eigvals = linalg.eigvals(self.covariance_, test_cov)
-            error_norm = np.sum(np.log(eigvals))
+            error_norm = np.sum(np.log(eigvals) ** 2) ** (1. / 2)
         elif norm == "invFro":
             error = linalg.inv(test_cov) - self.precision_
             error_norm = np.sqrt(np.sum(error ** 2))
@@ -152,7 +151,6 @@ class IPS(GraphLasso):
             self.base_estimator_ = clone(self.base_estimator)
         logger.setLevel(self.verbose)
         S = self.base_estimator_.fit(X).covariance_
-        p = S.shape[0]
         if self.scale_2_corr:
             S = _cov_2_corr(S)
         precision_, var_gap_, dual_gap_, f_vals_ =\
