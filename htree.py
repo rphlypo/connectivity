@@ -26,6 +26,12 @@ class Node(object):
     def get_parent(self):
         return self.parent
 
+    def get_siblings(self):
+        try:
+            return self.parent.children
+        except AttributeError:
+            return None
+
     def complement(self):
         return set([child.evaluate() for child in self.parent.children]) -\
             set([self.evaluate()])
