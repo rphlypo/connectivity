@@ -36,6 +36,29 @@ class Node(object):
     def _set_level(self, level):
         self.level_ = level
 
+    def get_descendants(self):
+        """ return all descendant with their relative level in the tree
+        """
+        desc = [node for node in _get_node_list(self)]
+        desc.sort(key=lambda x: x[1])
+        return desc
+
+    def get_ancestors(self):
+        """ return ancestor nodes with their relative level in the tree
+        """
+        node = self
+        ancestors = list()
+        level = 0
+        while True:
+            try:
+                level -= 1
+                node = node.get_parent()
+                if node is None:
+                    raise StopIteration
+                ancestors.append((node, level))
+            except StopIteration:
+                return ancestors
+
 
 def _get_node_values(node):
     try:
