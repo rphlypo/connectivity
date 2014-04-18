@@ -4,6 +4,7 @@ import sklearn.utils.extmath
 from sklearn.covariance.empirical_covariance_ import EmpiricalCovariance
 import copy
 import numbers
+from htree import HTree
 from scipy import linalg
 
 
@@ -190,7 +191,7 @@ class IPS(GraphLasso):
 
 
 class HierarchicalGraphLasso(GraphLasso):
-    def __init__(self, htree, tol=1e-6, max_iter=100, verbose=0,
+    def __init__(self, htree, alpha, tol=1e-6, max_iter=100, verbose=0,
                  base_estimator=None, scale_2_corr=True, rho=1., score=None,
                  n_jobs=1):
         """ hierarchical version of graph lasso with ell1-2 penalty
@@ -202,6 +203,7 @@ class HierarchicalGraphLasso(GraphLasso):
             function is to be optimised
         """
         self.htree = htree
+        self.alpha = alpha
         self.tol = tol
         self.max_iter = max_iter
         self.verbose = verbose
@@ -215,7 +217,7 @@ class HierarchicalGraphLasso(GraphLasso):
     def fit(self, X, y=None, **kwargs):
         S = self._X_to_cov(X)
         precision_, var_gap_, dual_gap_, f_vals_ =\
-            _admm_hgl(S, self.support, rho=self.rho, tol=self.tol,
+            _admm_hgl(S, self.htree, self.alpha, rho=self.rho, tol=self.tol,
                       max_iter=self.max_iter)
 
         self.precision_ = precision_
@@ -361,9 +363,15 @@ def _admm_hgl(S, htree, alpha, rho=1., tau_inc=2., tau_decr=2., mu=None,
     s_.append(np.inf)
     f_vals_.append(_pen_neg_log_likelihood(X, S))
     iter_count = 0
+    # if a (nested) list is given, create the tree
+    if hasattr(htree, '__iter__'):
+        tree_list = copy.deepcopy(htree)
+        htree = HTree()
+        htree.tree(tree_list)
+        htree._update()
     # this returns an ordered list from leaves to root nodes
     nodes_levels = htree.root_.get_descendants()
-    nodes_levels.sort(key=lambda x: x[2])
+    nodes_levels.sort(key=lambda x: x[1])
     nodes_levels.reverse()
     while True:
         try:
@@ -377,14 +385,18 @@ def _admm_hgl(S, htree, alpha, rho=1., tau_inc=2., tau_decr=2., mu=None,
             # TODO for a given level we could evaluate all in parallel!
             for (node, level) in nodes_levels:
                 ix = node.evaluate()
-                for ixc in node.complement():
+                for node_c in node.complement():
+                    ixc = node_c.evaluate()
+                    print ix
+                    print ixc
                     B = Z[np.ix_(ix, ixc)]
-                    multiplier = (1 - (1 - alpha ** level) /
-                                  (rho * np.linalg.norm(B)))
-                    multiplier = max(0, multiplier)
-                    B *= multiplier
-                    Z[np.ix_(ix, ixc)] = B
-                    Z[np.ix_(ixc, ix)] = B.T
+                    if np.linalg.norm(B):
+                        multiplier = (1 - (1 - alpha ** level) /
+                                      (rho * np.linalg.norm(B)))
+                        multiplier = max(0, multiplier)
+                        B *= multiplier
+                        Z[np.ix_(ix, ixc)] = B
+                        Z[np.ix_(ixc, ix)] = B.T
             # update scaled dual variable
             U = U + X - Z
             r_.append(linalg.norm(X - Z) / (p ** 2))
