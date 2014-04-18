@@ -358,6 +358,10 @@ def _admm_hgl(S, htree, alpha, rho=1., tau_inc=2., tau_decr=2., mu=None,
     s_.append(np.inf)
     f_vals_.append(_pen_neg_log_likelihood(X, S))
     iter_count = 0
+    # this returns an ordered list from leaves to root nodes
+    nodes_levels = htree.root_.get_descendants()
+    nodes_levels.sort(key=lambda x: x[2])
+    nodes_levels.reverse()
     while True:
         try:
             Z_old = Z.copy()
@@ -367,11 +371,14 @@ def _admm_hgl(S, htree, alpha, rho=1., tau_inc=2., tau_decr=2., mu=None,
             X = eigvecs.dot(eigvals_.dot(eigvecs.T)) / (2 * rho)
             # proximal operator for Z: projection on support
             Z = U + X
-            for (node, node_level) in htree._get_node_list(htree.root_):
+            for (node, level) in nodes_levels:
                 ix = node.evaluate()
                 for ixc in node.complement():
-                    B = (U + X)[np.ix_(ix, ixc)]
-                    B *= (1 - alpha ** node_level / (rho * np.linalg.norm(B)))
+                    B = Z[np.ix_(ix, ixc)]
+                    multiplier = (1 - (1 - alpha ** level) /
+                                  (rho * np.linalg.norm(B)))
+                    multiplier = max(0, multiplier)
+                    B *= multiplier
                     Z[np.ix_(ix, ixc)] = B
                     Z[np.ix_(ixc, ix)] = B.T
             # update scaled dual variable
