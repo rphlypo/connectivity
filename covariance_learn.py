@@ -56,7 +56,7 @@ class GraphLasso(EmpiricalCovariance):
         self.store_precision = True
 
     def fit(self, X, y=None, **kwargs):
-        S = self.X_to_cov(X)
+        S = self._X_to_cov(X)
         precision_, var_gap_, dual_gap_, f_vals_ =\
             _admm_gl(S, self.alpha, rho=self.rho, tol=self.tol,
                      max_iter=self.max_iter)
@@ -68,7 +68,7 @@ class GraphLasso(EmpiricalCovariance):
         self.f_vals_ = copy.deepcopy(f_vals_)
         return self
 
-    def X_to_cov(self, X):
+    def _X_to_cov(self, X):
         if self.base_estimator is None:
             self.base_estimator_ = EmpiricalCovariance(assume_centered=True)
         else:
@@ -176,7 +176,7 @@ class IPS(GraphLasso):
         self.store_precision = True
 
     def fit(self, X, y=None, **kwargs):
-        S = self.X_to_cov(X)
+        S = self._X_to_cov(X)
         precision_, var_gap_, dual_gap_, f_vals_ =\
             _admm_ips(S, self.support, rho=self.rho, tol=self.tol,
                       max_iter=self.max_iter)
@@ -191,7 +191,8 @@ class IPS(GraphLasso):
 
 class HierarchicalGraphLasso(GraphLasso):
     def __init__(self, htree, tol=1e-6, max_iter=100, verbose=0,
-                 base_estimator=None, scale_2_corr=True, rho=1., score=None):
+                 base_estimator=None, scale_2_corr=True, rho=1., score=None,
+                 n_jobs=1):
         """ hierarchical version of graph lasso with ell1-2 penalty
 
         extra arguments
@@ -207,11 +208,12 @@ class HierarchicalGraphLasso(GraphLasso):
         self.base_estimator = base_estimator
         self.scale_2_corr = True
         self.rho = rho
+        self.n_jobs = n_jobs
         # needed for the score function of EmpiricalCovariance
         self.store_precision = True
 
     def fit(self, X, y=None, **kwargs):
-        S = self.X_to_cov(X)
+        S = self._X_to_cov(X)
         precision_, var_gap_, dual_gap_, f_vals_ =\
             _admm_hgl(S, self.support, rho=self.rho, tol=self.tol,
                       max_iter=self.max_iter)
@@ -344,6 +346,7 @@ def _admm_hgl(S, htree, alpha, rho=1., tau_inc=2., tau_decr=2., mu=None,
         convergence of the variable Z in normalised norm
         normalisation is based on division by the number of elements
     """
+    # TODO foresee option to give a list of alphas, one for each level
     p = S.shape[0]
     Z = (1 + rho) * np.identity(p)
     U = np.zeros((p, p))
@@ -371,6 +374,7 @@ def _admm_hgl(S, htree, alpha, rho=1., tau_inc=2., tau_decr=2., mu=None,
             X = eigvecs.dot(eigvals_.dot(eigvecs.T)) / (2 * rho)
             # proximal operator for Z: projection on support
             Z = U + X
+            # TODO for a given level we could evaluate all in parallel!
             for (node, level) in nodes_levels:
                 ix = node.evaluate()
                 for ixc in node.complement():
