@@ -9,7 +9,7 @@ class Node(object):
         self.value = value
 
     def evaluate(self):
-        return tuple(list(_get_node_values(self)))
+        return [val for val in _get_node_values(self)]
 
     def add_children(self, children):
         """ add one or more children
@@ -33,8 +33,8 @@ class Node(object):
             return None
 
     def complement(self):
-        return set([child.evaluate() for child in self.parent.children]) -\
-            set([self.evaluate()])
+        return [child for child in self.parent.children
+                if child is not self]
 
     def set_value(self, value):
         self.value_ = value
