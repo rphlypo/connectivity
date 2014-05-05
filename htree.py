@@ -33,6 +33,8 @@ class Node(object):
             return None
 
     def complement(self):
+        if self.parent is None:
+            return None
         return [child for child in self.parent.children
                 if child is not self]
 
@@ -45,7 +47,8 @@ class Node(object):
     def get_descendants(self):
         """ return all descendant with their relative level in the tree
         """
-        desc = [node for node in _get_node_list(self)]
+        desc = [node for node in _get_node_list(self)
+                if node[0] is not self]
         desc.sort(key=lambda x: x[1])
         return desc
 

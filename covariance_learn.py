@@ -368,6 +368,8 @@ def _admm_hgl(S, htree, alpha, rho=1., tau_inc=2., tau_decr=2., mu=None,
         tree_list = copy.deepcopy(htree)
         htree = HTree()
         htree.tree(tree_list)
+        # {htree}._update() is ok for small trees, otherwise use on-the-fly
+        # evaluation with {node}._get_node_values() at each node call
         htree._update()
     # this returns an ordered list from leaves to root nodes
     nodes_levels = htree.root_.get_descendants()
@@ -384,16 +386,20 @@ def _admm_hgl(S, htree, alpha, rho=1., tau_inc=2., tau_decr=2., mu=None,
             Z = U + X
             # TODO for a given level we could evaluate all in parallel!
             for (node, level) in nodes_levels:
+                if node.complement() is None:
+                    continue
                 ix = node.evaluate()
                 for node_c in node.complement():
                     ixc = node_c.evaluate()
-                    print ix
-                    print ixc
                     B = Z[np.ix_(ix, ixc)]
                     if np.linalg.norm(B):
-                        multiplier = (1 - (1 - alpha ** level) /
+#                       # previously
+#                       multiplier = (1 - (1 - alpha) ** level /
+#                                     (rho * np.linalg.norm(B)))
+
+                        multiplier = (1. - np.size(B) * alpha ** level /
                                       (rho * np.linalg.norm(B)))
-                        multiplier = max(0, multiplier)
+                        multiplier = max(0., multiplier)
                         B *= multiplier
                         Z[np.ix_(ix, ixc)] = B
                         Z[np.ix_(ixc, ix)] = B.T
