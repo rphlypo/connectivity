@@ -45,14 +45,15 @@ class GraphLasso(EmpiricalCovariance):
     """
     def __init__(self, alpha, tol=1e-6, max_iter=100, verbose=0,
                  base_estimator=None,
-                 scale_2_corr=True, rho=1., score=None):
+                 scale_2_corr=True, rho=1., score_norm=None):
         self.alpha = alpha
         self.tol = tol
         self.max_iter = max_iter
         self.verbose = verbose
         self.base_estimator = base_estimator
-        self.scale_2_corr = True
+        self.scale_2_corr = scale_2_corr
         self.rho = rho
+        self.score_norm = score_norm
         # needed for the score function of EmpiricalCovariance
         self.store_precision = True
 
@@ -102,8 +103,8 @@ class GraphLasso(EmpiricalCovariance):
 
         """
         # compute empirical covariance of the test set
-        if self.score is not None:
-            return self._error_norm(X_test, norm=self.score)
+        if self.score_norm is not None:
+            return self._error_norm(X_test, norm=self.score_norm)
         else:
             test_cov = self.base_estimator_.fit(X_test).covariance_
             if self.scale_2_corr:
@@ -165,7 +166,7 @@ class IPS(GraphLasso):
     """
     def __init__(self, support, tol=1e-6, max_iter=100, verbose=0,
                  base_estimator=None,
-                 scale_2_corr=True, rho=1., score=None):
+                 scale_2_corr=True, rho=1., score_norm=None):
         self.support = support
         self.tol = tol
         self.max_iter = max_iter
@@ -173,6 +174,7 @@ class IPS(GraphLasso):
         self.base_estimator = base_estimator
         self.scale_2_corr = True
         self.rho = rho
+        self.score_norm = score_norm
         # needed for the score function of EmpiricalCovariance
         self.store_precision = True
 
@@ -192,8 +194,8 @@ class IPS(GraphLasso):
 
 class HierarchicalGraphLasso(GraphLasso):
     def __init__(self, htree, alpha, tol=1e-6, max_iter=100, verbose=0,
-                 base_estimator=None, scale_2_corr=True, rho=1., score=None,
-                 n_jobs=1):
+                 base_estimator=None, scale_2_corr=True, rho=1.,
+                 score_norm=None, n_jobs=1):
         """ hierarchical version of graph lasso with ell1-2 penalty
 
         extra arguments
@@ -210,6 +212,7 @@ class HierarchicalGraphLasso(GraphLasso):
         self.base_estimator = base_estimator
         self.scale_2_corr = True
         self.rho = rho
+        self.score_norm = score_norm
         self.n_jobs = n_jobs
         # needed for the score function of EmpiricalCovariance
         self.store_precision = True
@@ -393,11 +396,9 @@ def _admm_hgl(S, htree, alpha, rho=1., tau_inc=2., tau_decr=2., mu=None,
                     ixc = node_c.evaluate()
                     B = Z[np.ix_(ix, ixc)]
                     if np.linalg.norm(B):
-#                       # previously
-#                       multiplier = (1 - (1 - alpha) ** level /
-#                                     (rho * np.linalg.norm(B)))
-
-                        multiplier = (1. - np.size(B) * alpha ** level /
+                        # needs np.linalg.norm(B) / np.size(B) and not
+                        # np.linalg.norm(B) to be independent of size !
+                        multiplier = (1. - np.sqrt(np.size(B)) * alpha /  # ** level /
                                       (rho * np.linalg.norm(B)))
                         multiplier = max(0., multiplier)
                         B *= multiplier
