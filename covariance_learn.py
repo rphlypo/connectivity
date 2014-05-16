@@ -477,11 +477,12 @@ def _cov_2_corr(covariance):
     return (correlation + correlation.T) / 2.
 
 
-def _cross_val(X, method='gl', alpha_tol=1e-4,
-               n_iter=100, train_size=.1, test_size=.5,
-               model_prec=None, verbose=0,
-               **kwargs):
+def cross_val(X, method='gl', alpha_tol=1e-4,
+              n_iter=100, train_size=.1, test_size=.5,
+              model_prec=None, verbose=0, n_jobs=1,
+              **kwargs):
     from sklearn import cross_validation
+    from joblib import Parallel, delayed
     # logging.ERROR is at level 40
     # logging.WARNING is at level 30, everything below is low priority
     # logging.INFO is at level 20, verbose 10
@@ -499,24 +500,20 @@ def _cross_val(X, method='gl', alpha_tol=1e-4,
     if model_prec is not None:
         sqrt_p = np.sqrt(model_prec.shape[0])
         eigvals, eigvecs = linalg.eigh(model_prec)
-        model = eigvecs.dot(np.diag(1. / np.sqrt(eigvals))).dot(eigvecs.T)
-        model *= sqrt_p
+        model_prec = eigvecs.dot(np.diag(1. / np.sqrt(eigvals))).dot(eigvecs.T)
+        model_prec *= sqrt_p
 
     # alpha_max ?
     alphas = np.linspace(0., 1., 5)
     LL = np.zeros((5,))
     LL_ = list()
     for (ix, alpha) in enumerate(alphas):
-        for train_ix, test_ix in bs:
-            X_train = X[train_ix, ...]
-            if model_prec is None:
-                X_test = X[test_ix, ...]
-            else:
-                X_test = model
-            score = cov_learner(alpha=alpha,
-                                **kwargs).fit(X_train).score(X_test)
-            LL[ix] += score
-    LL_.append(LL[2] / n_iter)
+        cov_learner_ = cov_learner(alpha=alpha, **kwargs)
+        res_ = Parallel(n_jobs=n_jobs)(delayed(_eval_cov_learner)(
+            X, train_ix, test_ix, model_prec, cov_learner_)
+            for train_ix, test_ix in bs)
+        LL[ix] = np.mean(np.array(res_))
+    LL_.append(LL[2])
     while True:
         try:
             max_ix = min(max(np.argmax(LL), 1), 3)
@@ -530,15 +527,22 @@ def _cross_val(X, method='gl', alpha_tol=1e-4,
             logger.info("refining alpha grid to interval [{}, {}]".format(
                 alphas[0], alphas[-1]))
             for (ix, alpha) in enumerate(alphas[[1, 3]]):
-                for train_ix, test_ix in bs:
-                    X_train = X[train_ix, ...]
-                    if model_prec is None:
-                        X_test = X[test_ix, ...]
-                    else:
-                        X_test = model
-                    LL[ix * 2 + 1] += \
-                        cov_learner(alpha=alpha,
-                                    **kwargs).fit(X_train).score(X_test)
-            LL_.append(LL[2] / n_iter)
+                cov_learner_ = cov_learner(alpha=alpha, **kwargs)
+                res_ = Parallel(n_jobs=n_jobs)(delayed(_eval_cov_learner)(
+                    X, train_ix, test_ix, model_prec, cov_learner_)
+                    for train_ix, test_ix in bs)
+                ix_ = 2 * ix + 1
+                LL[ix_] = np.mean(np.array(res_))
+            LL_.append(LL[2])
         except StopIteration:
             return alphas[2], LL_
+
+
+def _eval_cov_learner(X, train_ix, test_ix, model_prec, cov_learner):
+    X_train = X[train_ix, ...]
+    if model_prec is None:
+        X_test = X[test_ix, ...]
+    else:
+        X_test = model_prec
+    score = cov_learner.fit(X_train).score(X_test)
+    return score
