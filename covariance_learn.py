@@ -165,7 +165,7 @@ class GraphLasso(EmpiricalCovariance):
             error_norm = np.linalg.slogdet(test_cov)[1]
             error_norm += np.linalg.slogdet(self.precision_)[1]
             error_norm -= self.precision_.shape[0]
-            error_norm += np.linalg.trace(linalg.inv(
+            error_norm += np.trace(linalg.inv(
                 test_cov.dot(self.precision_)))
             error_norm /= 2.
         else:
