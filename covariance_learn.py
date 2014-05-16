@@ -1,4 +1,5 @@
 import logging
+import sys
 import numpy as np
 import sklearn.utils.extmath
 import copy
@@ -12,6 +13,7 @@ from sklearn.covariance.empirical_covariance_ import EmpiricalCovariance
 
 
 logger = logging.getLogger(__name__)
+logger.addHandler(logging.StreamHandler(sys.stderr))
 fast_logdet = sklearn.utils.extmath.fast_logdet
 
 
@@ -476,7 +478,8 @@ def _cov_2_corr(covariance):
 
 
 def _cross_val(X, method='gl', alpha_tol=1e-4,
-               n_iter=100, train_size=.1, test_size=.5, verbose=0,
+               n_iter=100, train_size=.1, test_size=.5,
+               model_prec=None, verbose=0,
                **kwargs):
     from sklearn import cross_validation
     # logging.ERROR is at level 40
@@ -493,6 +496,12 @@ def _cross_val(X, method='gl', alpha_tol=1e-4,
         cov_learner = HierarchicalGraphLasso
     elif method == 'ips':
         cov_learner = IPS
+    if model_prec is not None:
+        sqrt_p = np.sqrt(model_prec.shape[0])
+        eigvals, eigvecs = linalg.eigh(model_prec)
+        model = eigvecs.dot(np.diag(1. / np.sqrt(eigvals))).dot(eigvecs.T)
+        model *= sqrt_p
+
     # alpha_max ?
     alphas = np.linspace(0., 1., 5)
     LL = np.zeros((5,))
@@ -500,7 +509,10 @@ def _cross_val(X, method='gl', alpha_tol=1e-4,
     for (ix, alpha) in enumerate(alphas):
         for train_ix, test_ix in bs:
             X_train = X[train_ix, ...]
-            X_test = X[test_ix, ...]
+            if model_prec is None:
+                X_test = X[test_ix, ...]
+            else:
+                X_test = model
             score = cov_learner(alpha=alpha,
                                 **kwargs).fit(X_train).score(X_test)
             LL[ix] += score
@@ -520,7 +532,10 @@ def _cross_val(X, method='gl', alpha_tol=1e-4,
             for (ix, alpha) in enumerate(alphas[[1, 3]]):
                 for train_ix, test_ix in bs:
                     X_train = X[train_ix, ...]
-                    X_test = X[test_ix, ...]
+                    if model_prec is None:
+                        X_test = X[test_ix, ...]
+                    else:
+                        X_test = model
                     LL[ix * 2 + 1] += \
                         cov_learner(alpha=alpha,
                                     **kwargs).fit(X_train).score(X_test)
