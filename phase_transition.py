@@ -45,13 +45,13 @@ def eval_point(a, b, Z, tree, alpha_tol=1e-2, n_jobs=1, verbose=0):
             covariance_learn.cross_val(X, model_prec=Theta,
                                        method='hgl', htree=tree,
                                        alpha_tol=alpha_tol, n_iter=15,
-                                       train_size=.2, test_size=.5,
+                                       train_size=.1, test_size=.5,
                                        n_jobs=n_jobs, verbose=verbose)
         alpha_star_gl, LL_gl = \
             covariance_learn.cross_val(X, model_prec=Theta,
                                        method='gl',
                                        alpha_tol=alpha_tol, n_iter=15,
-                                       train_size=.2, test_size=.5,
+                                       train_size=.1, test_size=.5,
                                        n_jobs=n_jobs, verbose=verbose)
         print "\thgl: {}, gl: {}".format(LL_hgl[-1], LL_gl[-1])
         return LL_hgl[-1], LL_gl[-1]
@@ -65,7 +65,8 @@ def plot_grid(result, ix):
     f_min = np.min(f)
     f_max = np.max(f)
     plt.figure()
-    im = plt.imshow(f, origin='lower', cmap=plt.cm.RdBu)
+    im = plt.imshow(f, origin='lower', cmap=plt.cm.RdBu_r,
+                    interpolation='nearest')
     cset = plt.contour(f, np.linspace(f_min, f_max, 10), linewidths=2,
                        cmap=plt.cm.Set2)
     plt.clabel(cset, inline=True, fmt='%1.4f', fontsize=10)
