@@ -34,7 +34,7 @@ def eval_grid(a_vec=None, b_vec=None, **kwargs):
             np.array(zip(*result)[1]).reshape(m, n))
 
 
-def eval_point(a, b, Z, tree, alpha_tol=1e-2, n_jobs=1, verbose=0):
+def eval_point(a, b, Z, tree, alpha_tol=1e-2, n_jobs=1, verbose=0, n_iter=10):
     try:
         print "evaluating point({}, {})".format(a, b)
         Theta = _get_mx(a, b)
@@ -44,15 +44,17 @@ def eval_point(a, b, Z, tree, alpha_tol=1e-2, n_jobs=1, verbose=0):
         alpha_star_hgl, LL_hgl = \
             covariance_learn.cross_val(X, model_prec=Theta,
                                        method='hgl', htree=tree,
-                                       alpha_tol=alpha_tol, n_iter=15,
+                                       alpha_tol=alpha_tol, n_iter=n_iter,
                                        train_size=.1, test_size=.5,
-                                       n_jobs=n_jobs, verbose=verbose)
+                                       n_jobs=n_jobs, verbose=verbose,
+                                       score_norm="KL")
         alpha_star_gl, LL_gl = \
             covariance_learn.cross_val(X, model_prec=Theta,
                                        method='gl',
-                                       alpha_tol=alpha_tol, n_iter=15,
+                                       alpha_tol=alpha_tol, n_iter=n_iter,
                                        train_size=.1, test_size=.5,
-                                       n_jobs=n_jobs, verbose=verbose)
+                                       n_jobs=n_jobs, verbose=verbose,
+                                       score_norm="KL")
         print "\thgl: {}, gl: {}".format(LL_hgl[-1], LL_gl[-1])
         return LL_hgl[-1], LL_gl[-1]
     except ValueError:
@@ -76,8 +78,6 @@ def plot_grid(result, ix):
 
 
 if __name__ == "__main__":
-    a_vec = np.linspace(0, 1, 5)
-    b_vec = np.linspace(0, 1, 5)
-    result = eval_grid(a_vec=a_vec, b_vec=b_vec)
+    result = eval_grid(n_jobs=10, n_iter=10)
     im = plot_grid(result, 0)
     im.set_title("hierarchical graphical lasso")
