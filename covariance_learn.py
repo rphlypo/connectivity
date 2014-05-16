@@ -129,6 +129,8 @@ class GraphLasso(EmpiricalCovariance):
             - 'geodesic':
                 sum(log(eigenvalues(model_precision.dot(test_covariance))))
             - 'invFro': sqrt(trace(B.T.dot(B)))
+            - 'KL':
+                (-log(det(test_covariance)) - log(det(model_precision))) / 2
             where A is the error ``(test_covariance - model_covariance)``
             and   B is the error ``(test_precision - model_precision)``
         Returns
@@ -155,6 +157,10 @@ class GraphLasso(EmpiricalCovariance):
         elif norm == "invFro":
             error = linalg.inv(test_cov) - self.precision_
             error_norm = np.sqrt(np.sum(error ** 2))
+        elif norm == "KL":
+            error_norm = - np.prod(np.linalg.slogdet(test_cov))
+            error_norm -= np.prod(np.linalg.slogdet(self.precision_))
+            error_norm /= 2.
         else:
             raise NotImplementedError(
                 "Only the following norms are implemented:\n"
@@ -394,7 +400,7 @@ def _admm_hgl(S, htree, alpha, rho=1., tau_inc=1.1, tau_decr=1.1, mu=None,
             eigvals_ = np.diag(eigvals + (eigvals ** 2 + 4 * rho) ** (1. / 2))
             X = eigvecs.dot(eigvals_.dot(eigvecs.T)) / (2 * rho)
             # smooth functional score
-            f_vals_.append(-np.linalg.slogdet(X)[1] + np.sum(X * S))
+            f_vals_.append(-np.prod(np.linalg.slogdet(X)) + np.sum(X * S))
             # proximal operator for Z: projection on support
             Z = U + X
             # TODO for a given level we could evaluate all in parallel!
@@ -447,7 +453,7 @@ def _check_convergence(X, Z, Z_old, U, rho, tol_abs=1e-12, tol_rel=1e-6):
 
 
 def _pen_neg_log_likelihood(X, S, A=None):
-    log_likelihood = - np.linalg.slogdet(X)[1] + np.sum((X * S).flat)
+    log_likelihood = - np.prod(np.linalg.slogdet(X)) + np.sum((X * S).flat)
     if A is not None:
         log_likelihood += np.sum((X * A).flat)
     return log_likelihood
@@ -455,7 +461,7 @@ def _pen_neg_log_likelihood(X, S, A=None):
 
 def log_likelihood(precision, covariance):
     p = precision.shape[0]
-    log_likelihood_ = np.linalg.slogdet(precision)[1]
+    log_likelihood_ = np.prod(np.linalg.slogdet(precision))
     log_likelihood_ -= np.sum(precision * covariance)
     log_likelihood_ -= p * np.log(2 * np.pi)
     return log_likelihood_ / 2.
@@ -475,8 +481,8 @@ def _cross_val(X, method='gl', alpha_tol=1e-4,
     from sklearn import cross_validation
     # logging.ERROR is at level 40
     # logging.WARNING is at level 30, everything below is low priority
-    # logging.INFO is at level 20
-    # logging.DEBUG is at level 10
+    # logging.INFO is at level 20, verbose 10
+    # logging.DEBUG is at level 10, verbose 20
     logger.setLevel(logging.WARNING - verbose)
     bs = cross_validation.Bootstrap(X.shape[0], n_iter=n_iter,
                                     train_size=train_size,
