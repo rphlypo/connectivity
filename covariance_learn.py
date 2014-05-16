@@ -1,14 +1,14 @@
 import logging
 import numpy as np
 import sklearn.utils.extmath
-from sklearn.covariance.empirical_covariance_ import EmpiricalCovariance
 import copy
 import numbers
+
+
 from htree import HTree
 from scipy import linalg
-
-
 from sklearn.base import clone
+from sklearn.covariance.empirical_covariance_ import EmpiricalCovariance
 
 
 logger = logging.getLogger(__name__)
@@ -45,7 +45,7 @@ class GraphLasso(EmpiricalCovariance):
     """
     def __init__(self, alpha, tol=1e-6, max_iter=100, verbose=0,
                  base_estimator=None,
-                 scale_2_corr=True, rho=1., score_norm=None):
+                 scale_2_corr=True, rho=1., mu=None, score_norm=None):
         self.alpha = alpha
         self.tol = tol
         self.max_iter = max_iter
@@ -53,6 +53,7 @@ class GraphLasso(EmpiricalCovariance):
         self.base_estimator = base_estimator
         self.scale_2_corr = scale_2_corr
         self.rho = rho
+        self.mu = mu
         self.score_norm = score_norm
         # needed for the score function of EmpiricalCovariance
         self.store_precision = True
@@ -166,7 +167,7 @@ class IPS(GraphLasso):
     """
     def __init__(self, support, tol=1e-6, max_iter=100, verbose=0,
                  base_estimator=None,
-                 scale_2_corr=True, rho=1., score_norm=None):
+                 scale_2_corr=True, rho=1., mu=None, score_norm=None):
         self.support = support
         self.tol = tol
         self.max_iter = max_iter
@@ -174,6 +175,7 @@ class IPS(GraphLasso):
         self.base_estimator = base_estimator
         self.scale_2_corr = True
         self.rho = rho
+        self.mu = mu
         self.score_norm = score_norm
         # needed for the score function of EmpiricalCovariance
         self.store_precision = True
@@ -193,8 +195,8 @@ class IPS(GraphLasso):
 
 
 class HierarchicalGraphLasso(GraphLasso):
-    def __init__(self, htree, alpha, tol=1e-6, max_iter=100, verbose=0,
-                 base_estimator=None, scale_2_corr=True, rho=1.,
+    def __init__(self, htree, alpha, tol=1e-6, max_iter=1e4, verbose=0,
+                 base_estimator=None, scale_2_corr=True, rho=1., mu=None,
                  score_norm=None, n_jobs=1):
         """ hierarchical version of graph lasso with ell1-2 penalty
 
@@ -212,6 +214,7 @@ class HierarchicalGraphLasso(GraphLasso):
         self.base_estimator = base_estimator
         self.scale_2_corr = True
         self.rho = rho
+        self.mu = mu
         self.score_norm = score_norm
         self.n_jobs = n_jobs
         # needed for the score function of EmpiricalCovariance
@@ -221,7 +224,7 @@ class HierarchicalGraphLasso(GraphLasso):
         S = self._X_to_cov(X)
         precision_, var_gap_, dual_gap_, f_vals_ =\
             _admm_hgl(S, self.htree, self.alpha, rho=self.rho, tol=self.tol,
-                      max_iter=self.max_iter)
+                      mu=self.mu, max_iter=self.max_iter)
 
         self.precision_ = precision_
         self.covariance_ = linalg.inv(precision_)
@@ -268,12 +271,15 @@ def _admm_gl(S, alpha, rho=1., tau_inc=2., tau_decr=2., mu=None, tol=1e-6,
             f_vals_.append(_pen_neg_log_likelihood(X, S, alpha))
 
             if mu is not None:
+                Y = U * rho  # this is the unscaled Y
                 if r_[-1] > mu * s_[-1]:
                     rho *= tau_inc
                 elif s_[-1] > mu * r_[-1]:
                     rho /= tau_decr
+                U = Y / rho  # newly scaled dual variable
             iter_count += 1
-            if r_[-1] < tol or iter_count > max_iter:
+            if (_check_convergence(X, Z, Z_old, U, rho, tol_abs=tol) or
+                    iter_count > max_iter):
                 raise StopIteration
         except StopIteration:
             return Z, r_, s_, f_vals_
@@ -325,19 +331,22 @@ def _admm_ips(S, support, rho=1., tau_inc=2., tau_decr=2., mu=None, tol=1e-6,
             f_vals_.append(_pen_neg_log_likelihood(X, S))
 
             if mu is not None:
+                Y = U * rho  # this is the unscaled Y
                 if r_[-1] > mu * s_[-1]:
                     rho *= tau_inc
                 elif s_[-1] > mu * r_[-1]:
                     rho /= tau_decr
+                U = Y / rho  # newly scaled dual variable
             iter_count += 1
-            if r_[-1] < tol or iter_count > max_iter:
+            if (_check_convergence(X, Z, Z_old, U, rho, tol_abs=tol) or
+                    iter_count > max_iter):
                 raise StopIteration
         except StopIteration:
             return Z, r_, s_, f_vals_
 
 
-def _admm_hgl(S, htree, alpha, rho=1., tau_inc=2., tau_decr=2., mu=None,
-              tol=1e-6, max_iter=100, Xinit=None):
+def _admm_hgl(S, htree, alpha, rho=1., tau_inc=1.1, tau_decr=1.1, mu=None,
+              tol=1e-6, max_iter=1e2, Xinit=None):
     """
     returns:
     -------
@@ -353,7 +362,7 @@ def _admm_hgl(S, htree, alpha, rho=1., tau_inc=2., tau_decr=2., mu=None,
     """
     # TODO foresee option to give a list of alphas, one for each level
     p = S.shape[0]
-    Z = (1 + rho) * np.identity(p)
+    Z = (1. + rho) / rho * np.identity(p)
     U = np.zeros((p, p))
     if Xinit is None:
         X = np.identity(p)
@@ -364,7 +373,6 @@ def _admm_hgl(S, htree, alpha, rho=1., tau_inc=2., tau_decr=2., mu=None,
     f_vals_ = list()
     r_.append(linalg.norm(X - Z))
     s_.append(np.inf)
-    f_vals_.append(_pen_neg_log_likelihood(X, S))
     iter_count = 0
     # if a (nested) list is given, create the tree
     if hasattr(htree, '__iter__'):
@@ -385,6 +393,8 @@ def _admm_hgl(S, htree, alpha, rho=1., tau_inc=2., tau_decr=2., mu=None,
             eigvals, eigvecs = linalg.eigh(rho * (Z - U) - S)
             eigvals_ = np.diag(eigvals + (eigvals ** 2 + 4 * rho) ** (1. / 2))
             X = eigvecs.dot(eigvals_.dot(eigvecs.T)) / (2 * rho)
+            # smooth functional score
+            f_vals_.append(-np.linalg.slogdet(X)[1] + np.sum(X * S))
             # proximal operator for Z: projection on support
             Z = U + X
             # TODO for a given level we could evaluate all in parallel!
@@ -395,31 +405,45 @@ def _admm_hgl(S, htree, alpha, rho=1., tau_inc=2., tau_decr=2., mu=None,
                 for node_c in node.complement():
                     ixc = node_c.evaluate()
                     B = Z[np.ix_(ix, ixc)]
+                    alpha_ = alpha * np.sqrt(np.size(B))
+                    f_vals_[-1] = f_vals_[-1] + \
+                        alpha_ * np.linalg.norm(X[np.ix_(ix, ixc)])
                     if np.linalg.norm(B):
-                        # needs np.linalg.norm(B) / np.size(B) and not
-                        # np.linalg.norm(B) to be independent of size !
-                        multiplier = (1. - np.sqrt(np.size(B)) * alpha /  # ** level /
-                                      (rho * np.linalg.norm(B)))
+                        # needs np.linalg.norm(B) / np.sqrt(np.size(B)) and not
+                        # np.linalg.norm(B) so as to be independent of size !
+                        multiplier = (1. - alpha_ / (rho * np.linalg.norm(B)))
                         multiplier = max(0., multiplier)
                         B *= multiplier
                         Z[np.ix_(ix, ixc)] = B
                         Z[np.ix_(ixc, ix)] = B.T
             # update scaled dual variable
             U = U + X - Z
-            r_.append(linalg.norm(X - Z) / (p ** 2))
+            r_.append(linalg.norm(X - Z) / np.sqrt(p ** 2))
             s_.append(linalg.norm(Z - Z_old))
-            f_vals_.append(_pen_neg_log_likelihood(X, S))
 
             if mu is not None:
+                Y = U * rho  # this is the unscaled Y
                 if r_[-1] > mu * s_[-1]:
                     rho *= tau_inc
                 elif s_[-1] > mu * r_[-1]:
                     rho /= tau_decr
+                U = Y / rho  # newly scaled dual variable
             iter_count += 1
-            if r_[-1] < tol or iter_count > max_iter:
+            if (_check_convergence(X, Z, Z_old, U, rho, tol_abs=tol) or
+                    iter_count > max_iter):
                 raise StopIteration
         except StopIteration:
             return Z, r_, s_, f_vals_
+
+
+def _check_convergence(X, Z, Z_old, U, rho, tol_abs=1e-12, tol_rel=1e-6):
+    p = np.size(U)
+    n = np.size(X)
+    tol_primal = np.sqrt(p) * tol_abs + tol_rel * max([np.linalg.norm(X),
+                                                       np.linalg.norm(Z)])
+    tol_dual = np.sqrt(n) * tol_abs / rho + tol_rel * np.linalg.norm(U)
+    return (np.linalg.norm(X - Z) < tol_primal and
+            np.linalg.norm(Z - Z_old) < tol_dual)
 
 
 def _pen_neg_log_likelihood(X, S, A=None):
@@ -442,4 +466,58 @@ def _cov_2_corr(covariance):
     scale = np.diag(covariance.flat[::p + 1] ** (-1. / 2))
     correlation = scale.dot(covariance.dot(scale))
     # guarantee symmetry
-    return (correlation + correlation.T) / 2
+    return (correlation + correlation.T) / 2.
+
+
+def _cross_val(X, method='gl', alpha_tol=1e-4,
+               n_iter=100, train_size=.1, test_size=.5, verbose=0,
+               **kwargs):
+    from sklearn import cross_validation
+    # logging.ERROR is at level 40
+    # logging.WARNING is at level 30, everything below is low priority
+    # logging.INFO is at level 20
+    # logging.DEBUG is at level 10
+    logger.setLevel(logging.WARNING - verbose)
+    bs = cross_validation.Bootstrap(X.shape[0], n_iter=n_iter,
+                                    train_size=train_size,
+                                    test_size=test_size)
+    if method == 'gl':
+        cov_learner = GraphLasso
+    elif method == 'hgl':
+        cov_learner = HierarchicalGraphLasso
+    elif method == 'ips':
+        cov_learner = IPS
+    # alpha_max ?
+    alphas = np.linspace(0., 1., 5)
+    LL = np.zeros((5,))
+    LL_ = list()
+    for (ix, alpha) in enumerate(alphas):
+        for train_ix, test_ix in bs:
+            X_train = X[train_ix, ...]
+            X_test = X[test_ix, ...]
+            score = cov_learner(alpha=alpha,
+                                **kwargs).fit(X_train).score(X_test)
+            LL[ix] += score
+    LL_.append(LL[2] / n_iter)
+    while True:
+        try:
+            max_ix = min(max(np.argmax(LL), 1), 3)
+            LL[0] = LL[max_ix - 1]
+            LL[4] = LL[max_ix + 1]
+            LL[2] = LL[max_ix]
+            LL[1] = LL[3] = 0.
+            alphas = np.linspace(alphas[max_ix - 1], alphas[max_ix + 1], 5)
+            if alphas[-1] - alphas[0] < alpha_tol:
+                raise StopIteration
+            logger.info("refining alpha grid to interval [{}, {}]".format(
+                alphas[0], alphas[-1]))
+            for (ix, alpha) in enumerate(alphas[[1, 3]]):
+                for train_ix, test_ix in bs:
+                    X_train = X[train_ix, ...]
+                    X_test = X[test_ix, ...]
+                    LL[ix * 2 + 1] += \
+                        cov_learner(alpha=alpha,
+                                    **kwargs).fit(X_train).score(X_test)
+            LL_.append(LL[2] / n_iter)
+        except StopIteration:
+            return alphas[2], LL_
