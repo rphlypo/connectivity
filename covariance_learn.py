@@ -160,8 +160,13 @@ class GraphLasso(EmpiricalCovariance):
             error = linalg.inv(test_cov) - self.precision_
             error_norm = np.sqrt(np.sum(error ** 2))
         elif norm == "KL":
-            error_norm = - np.prod(np.linalg.slogdet(test_cov))
-            error_norm -= np.prod(np.linalg.slogdet(self.precision_))
+            # test_cov is the target model
+            # self.precision_
+            error_norm = np.linalg.slogdet(test_cov)[1]
+            error_norm += np.linalg.slogdet(self.precision_)[1]
+            error_norm -= self.precision_.shape[0]
+            error_norm += np.linalg.trace(linalg.inv(
+                test_cov.dot(self.precision_)))
             error_norm /= 2.
         else:
             raise NotImplementedError(
@@ -402,7 +407,7 @@ def _admm_hgl(S, htree, alpha, rho=1., tau_inc=1.1, tau_decr=1.1, mu=None,
             eigvals_ = np.diag(eigvals + (eigvals ** 2 + 4 * rho) ** (1. / 2))
             X = eigvecs.dot(eigvals_.dot(eigvecs.T)) / (2 * rho)
             # smooth functional score
-            f_vals_.append(-np.prod(np.linalg.slogdet(X)) + np.sum(X * S))
+            f_vals_.append(-np.linalg.slogdet(X)[1] + np.sum(X * S))
             # proximal operator for Z: projection on support
             Z = U + X
             # TODO for a given level we could evaluate all in parallel!
@@ -455,7 +460,7 @@ def _check_convergence(X, Z, Z_old, U, rho, tol_abs=1e-12, tol_rel=1e-6):
 
 
 def _pen_neg_log_likelihood(X, S, A=None):
-    log_likelihood = - np.prod(np.linalg.slogdet(X)) + np.sum((X * S).flat)
+    log_likelihood = - np.linalg.slogdet(X)[1] + np.sum((X * S).flat)
     if A is not None:
         log_likelihood += np.sum((X * A).flat)
     return log_likelihood
@@ -463,7 +468,7 @@ def _pen_neg_log_likelihood(X, S, A=None):
 
 def log_likelihood(precision, covariance):
     p = precision.shape[0]
-    log_likelihood_ = np.prod(np.linalg.slogdet(precision))
+    log_likelihood_ = np.linalg.slogdet(precision)[1]
     log_likelihood_ -= np.sum(precision * covariance)
     log_likelihood_ -= p * np.log(2 * np.pi)
     return log_likelihood_ / 2.
