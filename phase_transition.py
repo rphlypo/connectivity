@@ -1,50 +1,82 @@
 import numpy as np
-import maplotlib.pyplot as plt
+import matplotlib.pyplot as plt
 import scipy.linalg
 
 
 import covariance_learn
 
 
-def _get_designed_mx(a, b):
-    err_str = "{var} should be contained in ({min_bound}, {max_bound})"
+def _get_mx(a, b):
+    err_str = "{var} should be contained in ({l_bound}, {u_bound})"
     if np.abs(a) >= 1.:
-        raise ValueError(err_str.format("a", -1, 1))
+        raise ValueError(err_str.format(var="a", l_bound=-1, u_bound=1))
     if np.abs(b) >= 1. - a ** 2:
-        raise ValueError(err_str.format("b", a ** 2 - 1, 1 - a ** 2))
+        raise ValueError(err_str.format(var="b", l_bound=a ** 2 - 1,
+                                        u_bound=1 - a ** 2))
     return np.array([[1, a, b, 0],
                      [a, 1, 0, 0],
                      [b, 0, 1, a],
                      [0, 0, a, 1]], dtype=np.float)
 
 
-def _eval_on_grid():
-    a_ = np.linspace(0, 1, 11)
-    b_ = np.linspace(0, 1, 11)
+def eval_grid(a_vec=None, b_vec=None, **kwargs):
+    if a_vec is None:
+        a_vec = np.linspace(0, 1, 11)
+    if b_vec is None:
+        b_vec = np.linspace(0, 1, 11)
+    m = a_vec.size
+    n = b_vec.size
     Z = np.random.normal(size=(100, 4))
     tree = [[0, 1], [2, 3]]
-        result = np.ones((a.size(), b.size())) * np.nan
-    for (ix_a, a) in enumerate(a_):
-        for (ix_b, b) in enumerate(b_):
-            try:
-                M = _get_designed_mx(a, b)
-                eigvals, eigvecs = scipy.linalg.eigh(M)
-                M = eigvecs.dot(np.diag(1 / np.sqrt(eigvals))).dot(eigvecs.T)
-                X = Z.dot(M)
-                Y = M
-                alpha_star_hgl, LL_hgl = \
-                    covariance_learn._cross_val(X, method='hgl', htree=tree,
-                                                alpha_tol=1e-4, n_iter=25,
-                                                train_size=.2, test_size=.5)
-                score_hgl = covariance_learn.HierarchicalGraphLasso(
-                    tree, alpha=alpha_star_hgl).fit(Y).score(Y)
-                alpha_star_gl, LL_gl = \
-                    covariance_learn._cross_val(X, method='gl',
-                                                alpha_tol=1e-4, n_iter=25,
-                                                train_size=.2, test_size=.5)
-                score_gl = covariance_learn.GraphLasso(
-                    alpha=alpha_star_gl).fit(Y).score(Y)
+    result = [eval_point(a, b, Z, tree, **kwargs)
+              for a in a_vec for b in b_vec]
+    return (np.array(zip(*result)[0]).reshape(m, n),
+            np.array(zip(*result)[1]).reshape(m, n))
 
-            except ValueError:
-                continue
 
+def eval_point(a, b, Z, tree, alpha_tol=1e-2, n_jobs=1, verbose=0):
+    try:
+        print "evaluating point({}, {})".format(a, b)
+        Theta = _get_mx(a, b)
+        eigvals, eigvecs = scipy.linalg.eigh(Theta)
+        M = eigvecs.dot(np.diag(1 / np.sqrt(eigvals))).dot(eigvecs.T)
+        X = Z.dot(M)
+        alpha_star_hgl, LL_hgl = \
+            covariance_learn.cross_val(X, model_prec=Theta,
+                                       method='hgl', htree=tree,
+                                       alpha_tol=alpha_tol, n_iter=15,
+                                       train_size=.2, test_size=.5,
+                                       n_jobs=n_jobs, verbose=verbose)
+        alpha_star_gl, LL_gl = \
+            covariance_learn.cross_val(X, model_prec=Theta,
+                                       method='gl',
+                                       alpha_tol=alpha_tol, n_iter=15,
+                                       train_size=.2, test_size=.5,
+                                       n_jobs=n_jobs, verbose=verbose)
+        print "\thgl: {}, gl: {}".format(LL_hgl[-1], LL_gl[-1])
+        return LL_hgl[-1], LL_gl[-1]
+    except ValueError:
+        print "\tinvalid point"
+        return np.nan, np.nan
+
+
+def plot_grid(result, ix):
+    f = result[ix]
+    f_min = np.min(f)
+    f_max = np.max(f)
+    plt.figure()
+    im = plt.imshow(f, origin='lower', cmap=plt.cm.RdBu)
+    cset = plt.contour(f, np.linspace(f_min, f_max, 10), linewidths=2,
+                       cmap=plt.cm.Set2)
+    plt.clabel(cset, inline=True, fmt='%1.4f', fontsize=10)
+    plt.colorbar(im)
+    plt.show()
+    return im
+
+
+if __name__ == "__main__":
+    a_vec = np.linspace(0, 1, 5)
+    b_vec = np.linspace(0, 1, 5)
+    result = eval_grid(a_vec=a_vec, b_vec=b_vec)
+    im = plot_grid(result, 0)
+    im.set_title("hierarchical graphical lasso")
