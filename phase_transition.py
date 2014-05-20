@@ -64,20 +64,21 @@ def eval_point(a, b, Z, tree, alpha_tol=1e-2, n_jobs=1, verbose=0, n_iter=10):
 
 def plot_grid(result, ix):
     f = result[ix]
-    f_min = np.min(f)
-    f_max = np.max(f)
-    plt.figure()
-    im = plt.imshow(f, origin='lower', cmap=plt.cm.RdBu_r,
-                    interpolation='nearest')
-    cset = plt.contour(f, np.linspace(f_min, f_max, 10), linewidths=2,
+    f_abs_max = np.nanmax(np.abs(f))
+
+    fig = plt.figure()
+    ax = plt.imshow(f, origin='lower', cmap=plt.cm.RdBu_r)  #,
+                    #  interpolation='nearest')
+    plt.clim(-f_abs_max, f_abs_max)
+    cset = plt.contour(f, np.linspace(-f_abs_max, f_abs_max, 10), linewidths=2,
                        cmap=plt.cm.Set2)
     plt.clabel(cset, inline=True, fmt='%1.4f', fontsize=10)
-    plt.colorbar(im)
+    plt.colorbar(ax)
     plt.show()
-    return im
+    return fig
 
 
 if __name__ == "__main__":
     result = eval_grid(n_jobs=10, n_iter=10)
-    im = plot_grid(result, 0)
-    im.set_title("hierarchical graphical lasso")
+    fig = plot_grid(-result, 0)
+    fig.set_title("hierarchical graphical lasso")
