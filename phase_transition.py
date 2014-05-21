@@ -10,13 +10,15 @@ def _get_mx(a, b):
     err_str = "{var} should be contained in ({l_bound}, {u_bound})"
     if np.abs(a) >= 1.:
         raise ValueError(err_str.format(var="a", l_bound=-1, u_bound=1))
-    if np.abs(b) >= 1. - a ** 2:
-        raise ValueError(err_str.format(var="b", l_bound=a ** 2 - 1,
-                                        u_bound=1 - a ** 2))
-    return np.array([[1, a, b, 0],
-                     [a, 1, 0, 0],
-                     [b, 0, 1, a],
-                     [0, 0, a, 1]], dtype=np.float)
+    abs_bound_b = 2 * np.sqrt((1 - a) * (3 - a - np.sqrt(8 * (1 - a))))
+    if np.abs(b) >= abs_bound_b:
+        raise ValueError(err_str.format(var="b", l_bound=-abs_bound_b,
+                                        u_bound=abs_bound_b))
+    # TODO make this a block form such that the second level is sparse
+    return np.array([[1, a, b, b / 2],
+                     [a, 1, b / 2, 0],
+                     [b, b / 2, 1, a],
+                     [b / 2, 0, a, 1]], dtype=np.float)
 
 
 def eval_grid(a_vec=None, b_vec=None, **kwargs):
@@ -26,7 +28,7 @@ def eval_grid(a_vec=None, b_vec=None, **kwargs):
         b_vec = np.linspace(0, 1, 11)
     m = a_vec.size
     n = b_vec.size
-    Z = np.random.normal(size=(100, 4))
+    Z = np.random.normal(size=(1000, 4))
     tree = [[0, 1], [2, 3]]
     result = [eval_point(a, b, Z, tree, **kwargs)
               for a in a_vec for b in b_vec]
@@ -34,27 +36,31 @@ def eval_grid(a_vec=None, b_vec=None, **kwargs):
             np.array(zip(*result)[1]).reshape(m, n))
 
 
-def eval_point(a, b, Z, tree, alpha_tol=1e-2, n_jobs=1, verbose=0, n_iter=10):
+def eval_point(a, b, Z, tree, alpha_tol=1e-2, n_jobs=1, verbose=0, n_iter=10,
+               score_norm="KL", ips_flag=True):
     try:
         print "evaluating point({}, {})".format(a, b)
         Theta = _get_mx(a, b)
         eigvals, eigvecs = scipy.linalg.eigh(Theta)
         M = eigvecs.dot(np.diag(1 / np.sqrt(eigvals))).dot(eigvecs.T)
         X = Z.dot(M)
+        rs = np.random.randint(2 ** 32 - 1)
         alpha_star_hgl, LL_hgl = \
             covariance_learn.cross_val(X, model_prec=Theta,
                                        method='hgl', htree=tree,
                                        alpha_tol=alpha_tol, n_iter=n_iter,
-                                       train_size=.1, test_size=.5,
+                                       train_size=.01, test_size=.5,
                                        n_jobs=n_jobs, verbose=verbose,
-                                       score_norm="KL")
+                                       score_norm=score_norm, random_state=rs,
+                                       ips_flag=ips_flag)
         alpha_star_gl, LL_gl = \
             covariance_learn.cross_val(X, model_prec=Theta,
                                        method='gl',
                                        alpha_tol=alpha_tol, n_iter=n_iter,
-                                       train_size=.1, test_size=.5,
+                                       train_size=.01, test_size=.5,
                                        n_jobs=n_jobs, verbose=verbose,
-                                       score_norm="KL")
+                                       score_norm=score_norm, random_state=rs,
+                                       ips_flag=ips_flag)
         print "\thgl: {}, gl: {}".format(LL_hgl[-1], LL_gl[-1])
         return LL_hgl[-1], LL_gl[-1]
     except ValueError:
@@ -62,23 +68,50 @@ def eval_point(a, b, Z, tree, alpha_tol=1e-2, n_jobs=1, verbose=0, n_iter=10):
         return np.nan, np.nan
 
 
-def plot_grid(result, ix):
-    f = result[ix]
-    f_abs_max = np.nanmax(np.abs(f))
+def plot_grid(result, extent, ix='diff'):
+    if ix == 'diff':
+        f = result[0] - result[1]
+        f_max = np.nanmax(np.abs(f))
+        f_min = -f_max
+        cmap = plt.cm.RdBu_r
+        cmap2 = plt.cm.copper_r
+        title = 'LogLik(true model | data model) [hgl -- gl]'
+    else:
+        f = result[ix]
+        f_max = np.nanmax(f)
+        f_min = 0.
+        cmap = plt.cm.autumn
+        cmap2 = plt.cm.gray
+        title = 'LogLik(true model | data model)'
 
     fig = plt.figure()
-    ax = plt.imshow(f, origin='lower', cmap=plt.cm.RdBu_r)  #,
-                    #  interpolation='nearest')
-    plt.clim(-f_abs_max, f_abs_max)
-    cset = plt.contour(f, np.linspace(-f_abs_max, f_abs_max, 10), linewidths=2,
-                       cmap=plt.cm.Set2)
+    ax = plt.matshow(f, origin='lower', cmap=cmap,
+                     interpolation='nearest', extent=extent,
+                     fignum=False)
+    plt.clim(f_min, f_max)
+    cset = plt.contour(f, np.linspace(f_min, f_max, 10), linewidths=2,
+                       cmap=cmap2, extent=extent)
     plt.clabel(cset, inline=True, fmt='%1.4f', fontsize=10)
     plt.colorbar(ax)
-    plt.show()
+    plt.title(title)
+    plt.show
     return fig
 
 
 if __name__ == "__main__":
-    result = eval_grid(n_jobs=10, n_iter=10)
-    fig = plot_grid(-result, 0)
-    fig.set_title("hierarchical graphical lasso")
+    N_JOBS = 20
+    K = 5
+    N_ITER = K * N_JOBS
+    a_vec = np.linspace(0, 1, 11)
+    b_vec = np.linspace(0, 1, 11)
+    extent = [(3 * a_vec[0] - a_vec[1]) / 2.,
+              (3 * a_vec[-1] - a_vec[-2]) / 2.,
+              (3 * b_vec[0] - b_vec[1]) / 2.,
+              (3 * b_vec[-1] - b_vec[-2]) / 2.]
+    # "score_norm is None" implies log-likelihood of exact model in estimated
+    # model ("KL" returns the symmetrised Kullback-Leibler divergence)
+    # attention: log-likelihood is to be maximised, KL minimised
+    result = eval_grid(n_jobs=N_JOBS, n_iter=N_ITER, a_vec=a_vec, b_vec=b_vec,
+                       score_norm=None, ips_flag=True)
+    result = [-res for res in result]
+    fig = plot_grid(result,  extent)
