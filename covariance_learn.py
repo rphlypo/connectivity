@@ -62,11 +62,12 @@ class GraphLasso(EmpiricalCovariance):
 
     def fit(self, X, y=None, **kwargs):
         S = self._X_to_cov(X)
-        precision_, var_gap_, dual_gap_, f_vals_ =\
+        precision_, split_precision_, var_gap_, dual_gap_, f_vals_ =\
             _admm_gl(S, self.alpha, rho=self.rho, tol=self.tol,
                      max_iter=self.max_iter)
 
         self.precision_ = precision_
+        self.auxiliary_prec_ = split_precision_
         self.covariance_ = linalg.inv(precision_)
         self.var_gap_ = copy.deepcopy(var_gap_)
         self.dual_gap_ = copy.deepcopy(dual_gap_)
@@ -161,13 +162,13 @@ class GraphLasso(EmpiricalCovariance):
             error_norm = np.sqrt(np.sum(error ** 2))
         elif norm == "KL":
             # test_cov is the target model
-            # self.precision_
-            error_norm = np.linalg.slogdet(test_cov)[1]
-            error_norm += np.linalg.slogdet(self.precision_)[1]
-            error_norm -= self.precision_.shape[0]
+            # self.precision_ is the trained data model
+            # KL is symmetrised
+            error_norm = -self.precision_.shape[0]
             error_norm += np.trace(linalg.inv(
-                test_cov.dot(self.precision_)))
-            error_norm /= 2.
+                test_cov.dot(self.precision_))) / 2.
+            error_norm += np.trace(
+                test_cov.dot(self.precision_)) / 2.
         else:
             raise NotImplementedError(
                 "Only the following norms are implemented:\n"
@@ -195,11 +196,12 @@ class IPS(GraphLasso):
 
     def fit(self, X, y=None, **kwargs):
         S = self._X_to_cov(X)
-        precision_, var_gap_, dual_gap_, f_vals_ =\
+        precision_, split_precision_, var_gap_, dual_gap_, f_vals_ =\
             _admm_ips(S, self.support, rho=self.rho, tol=self.tol,
                       max_iter=self.max_iter)
 
         self.precision_ = precision_
+        self.auxiliary_prec_ = split_precision_
         self.covariance_ = linalg.inv(precision_)
         self.var_gap_ = copy.deepcopy(var_gap_)
         self.dual_gap_ = copy.deepcopy(dual_gap_)
@@ -235,11 +237,12 @@ class HierarchicalGraphLasso(GraphLasso):
 
     def fit(self, X, y=None, **kwargs):
         S = self._X_to_cov(X)
-        precision_, var_gap_, dual_gap_, f_vals_ =\
+        precision_, split_precision_, var_gap_, dual_gap_, f_vals_ =\
             _admm_hgl(S, self.htree, self.alpha, rho=self.rho, tol=self.tol,
                       mu=self.mu, max_iter=self.max_iter)
 
         self.precision_ = precision_
+        self.auxiliary_prec_ = split_precision_
         self.covariance_ = linalg.inv(precision_)
         self.var_gap_ = copy.deepcopy(var_gap_)
         self.dual_gap_ = copy.deepcopy(dual_gap_)
@@ -295,7 +298,7 @@ def _admm_gl(S, alpha, rho=1., tau_inc=2., tau_decr=2., mu=None, tol=1e-6,
                     iter_count > max_iter):
                 raise StopIteration
         except StopIteration:
-            return Z, r_, s_, f_vals_
+            return X, Z, r_, s_, f_vals_
 
 
 def _admm_ips(S, support, rho=1., tau_inc=2., tau_decr=2., mu=None, tol=1e-6,
@@ -355,7 +358,7 @@ def _admm_ips(S, support, rho=1., tau_inc=2., tau_decr=2., mu=None, tol=1e-6,
                     iter_count > max_iter):
                 raise StopIteration
         except StopIteration:
-            return Z, r_, s_, f_vals_
+            return X, Z, r_, s_, f_vals_
 
 
 def _admm_hgl(S, htree, alpha, rho=1., tau_inc=1.1, tau_decr=1.1, mu=None,
@@ -446,7 +449,7 @@ def _admm_hgl(S, htree, alpha, rho=1., tau_inc=1.1, tau_decr=1.1, mu=None,
                     iter_count > max_iter):
                 raise StopIteration
         except StopIteration:
-            return Z, r_, s_, f_vals_
+            return X, Z, r_, s_, f_vals_
 
 
 def _check_convergence(X, Z, Z_old, U, rho, tol_abs=1e-12, tol_rel=1e-6):
@@ -485,6 +488,7 @@ def _cov_2_corr(covariance):
 def cross_val(X, method='gl', alpha_tol=1e-4,
               n_iter=100, train_size=.1, test_size=.5,
               model_prec=None, verbose=0, n_jobs=1,
+              random_state=None, ips_flag=True,
               **kwargs):
     from sklearn import cross_validation
     from joblib import Parallel, delayed
@@ -495,7 +499,8 @@ def cross_val(X, method='gl', alpha_tol=1e-4,
     logger.setLevel(logging.WARNING - verbose)
     bs = cross_validation.Bootstrap(X.shape[0], n_iter=n_iter,
                                     train_size=train_size,
-                                    test_size=test_size)
+                                    test_size=test_size,
+                                    random_state=random_state)
     if method == 'gl':
         cov_learner = GraphLasso
     elif method == 'hgl':
@@ -534,7 +539,7 @@ def cross_val(X, method='gl', alpha_tol=1e-4,
             for (ix, alpha) in enumerate(alphas[[1, 3]]):
                 cov_learner_ = cov_learner(alpha=alpha, **kwargs)
                 res_ = Parallel(n_jobs=n_jobs)(delayed(_eval_cov_learner)(
-                    X, train_ix, test_ix, model_prec, cov_learner_)
+                    X, train_ix, test_ix, model_prec, cov_learner_, ips_flag)
                     for train_ix, test_ix in bs)
                 ix_ = 2 * ix + 1
                 LL[ix_] = np.mean(np.array(res_))
@@ -543,11 +548,27 @@ def cross_val(X, method='gl', alpha_tol=1e-4,
             return alphas[2], LL_
 
 
-def _eval_cov_learner(X, train_ix, test_ix, model_prec, cov_learner):
+def _eval_cov_learner(X, train_ix, test_ix, model_prec, cov_learner,
+                      ips_flag=True):
     X_train = X[train_ix, ...]
     if model_prec is None:
         X_test = X[test_ix, ...]
     else:
         X_test = model_prec
-    score = cov_learner.fit(X_train).score(X_test)
+    cov_learner_ = clone(cov_learner)
+    if not ips_flag:
+        score = cov_learner_.fit(X_train).score(X_test)
+    else:
+        # dual split variable contains exact zeros!
+        aux_prec = cov_learner_.fit(X_train).auxiliary_prec_
+        mask = np.abs(aux_prec) > machine_eps(0.)
+        ips = IPS(support=mask, score_norm=cov_learner_.score_norm)
+        score = ips.fit(X_train).score(X_test)
+    if cov_learner_.error_norm is not None:
+        score *= -1.
     return score
+
+
+def machine_eps(f):
+    import itertools
+    return next(2 ** -i for i in itertools.count() if f + 2 ** -(i + 1) == f)
