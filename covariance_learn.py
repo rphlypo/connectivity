@@ -122,8 +122,8 @@ class GraphLasso(EmpiricalCovariance):
 
         Parameters
         ----------
-        comp_cov : array-like, shape = [n_features, n_features]
-            The covariance to compare with.
+        X_test : array_like, shape = [n_samples, n_features]
+            Data for testing the method, could be the model itself
 
         norm : str
             The type of norm used to compute the error. Available error types:
@@ -141,16 +141,16 @@ class GraphLasso(EmpiricalCovariance):
         A distance measuring the divergence between the model and the test set
 
         """
-        test_cov = self.base_estimator_.fit(X_test).covariance_
-        if self.scale_2_corr:
-            test_cov = _cov_2_corr(test_cov)
+        if norm != "ell0":
+            test_cov = self.base_estimator_.fit(X_test).covariance_
+            if self.scale_2_corr:
+                test_cov = _cov_2_corr(test_cov)
+
         # compute the error norm
         if norm == "frobenius":
-            # compute the error
             error = test_cov - self.covariance_
             error_norm = np.sqrt(np.sum(error ** 2))
         elif norm == "spectral":
-            # compute the error
             error = test_cov - self.covariance_
             squared_norm = np.amax(linalg.svdvals(np.dot(error.T, error)))
             error_norm = np.sqrt(squared_norm)
@@ -169,11 +169,19 @@ class GraphLasso(EmpiricalCovariance):
                 test_cov.dot(self.precision_))) / 2.
             error_norm += np.trace(
                 test_cov.dot(self.precision_)) / 2.
+        elif norm == "ell0":
+            # X_test acts as a mask
+            mask = self._extract_mask(X_test)
+            error_norm = (np.sum(np.abs(self.precision_[mask]) >=
+                                 machine_eps(0))) / 2.
         else:
             raise NotImplementedError(
                 "Only the following norms are implemented:\n"
                 "spectral, Frobenius, inverse Frobenius, and geodesic")
         return error_norm
+
+    def _extract_mask(self, X_test):
+        return np.abs(X_test) <= machine_eps(0)
 
 
 class IPS(GraphLasso):
@@ -248,6 +256,10 @@ class HierarchicalGraphLasso(GraphLasso):
         self.dual_gap_ = copy.deepcopy(dual_gap_)
         self.f_vals_ = copy.deepcopy(f_vals_)
         return self
+
+    def _extract_mask(self, X_test=None):
+        # get the block-wise / hierarchical interaction ell-0 mask
+        return _ell0_mask(X_test, self.htree)
 
 
 def _admm_gl(S, alpha, rho=1., tau_inc=2., tau_decr=2., mu=None, tol=1e-6,
@@ -485,6 +497,33 @@ def _cov_2_corr(covariance):
     return (correlation + correlation.T) / 2.
 
 
+def _ell0_mask(X_test, htree):
+    if hasattr(htree, '__iter__'):
+        tree_list = copy.deepcopy(htree)
+        htree = HTree()
+        htree.tree(tree_list)
+        # {htree}._update() is ok for small trees, otherwise use on-the-fly
+        # evaluation with {node}._get_node_values() at each node call
+        htree._update()
+    # this returns an ordered list from leaves to root nodes
+    nodes_levels = htree.root_.get_descendants()
+    nodes_levels.sort(key=lambda x: x[1])
+    nodes_levels.reverse()
+    p = len([node for node in nodes_levels if not node[0].get_children()])
+    mask_ = np.zeros((p, p), dtype=np.bool)
+
+    for (node, level) in nodes_levels:
+        if node.complement() is None:
+            continue
+        ix = node.evaluate()
+        for node_c in node.complement():
+            ixc = node_c.evaluate()
+            ixs = np.ix_(ix, ixc)
+            mask_[ixs] = np.linalg.norm(X_test[ixs]) < machine_eps(1)
+            mask_[np.ix_(ixc, ix)] = mask_[ixs].T
+    return mask_
+
+
 def cross_val(X, method='gl', alpha_tol=1e-4,
               n_iter=100, train_size=.1, test_size=.5,
               model_prec=None, verbose=0, n_jobs=1,
@@ -564,7 +603,7 @@ def _eval_cov_learner(X, train_ix, test_ix, model_prec, cov_learner,
         mask = np.abs(aux_prec) > machine_eps(0.)
         ips = IPS(support=mask, score_norm=cov_learner_.score_norm)
         score = ips.fit(X_train).score(X_test)
-    if cov_learner_.error_norm is not None:
+    if cov_learner_.score_norm is not None:
         score *= -1.
     return score
 
