@@ -172,7 +172,7 @@ class GraphLasso(EmpiricalCovariance):
         elif norm == "ell0":
             # X_test acts as a mask
             mask = self._extract_mask(X_test)
-            error_norm = (np.sum(np.abs(self.precision_[mask]) >=
+            error_norm = (np.sum(np.abs(self.auxiliary_prec_[mask]) >=
                                  machine_eps(0))) / 2.
         else:
             raise NotImplementedError(
@@ -528,6 +528,7 @@ def cross_val(X, method='gl', alpha_tol=1e-4,
               n_iter=100, train_size=.1, test_size=.5,
               model_prec=None, verbose=0, n_jobs=1,
               random_state=None, ips_flag=True,
+              score_norm="KL", CV_norm=None,
               **kwargs):
     from sklearn import cross_validation
     from joblib import Parallel, delayed
@@ -546,20 +547,18 @@ def cross_val(X, method='gl', alpha_tol=1e-4,
         cov_learner = HierarchicalGraphLasso
     elif method == 'ips':
         cov_learner = IPS
-    if model_prec is not None:
-        sqrt_p = np.sqrt(model_prec.shape[0])
-        eigvals, eigvecs = linalg.eigh(model_prec)
-        model_prec = eigvecs.dot(np.diag(1. / np.sqrt(eigvals))).dot(eigvecs.T)
-        model_prec *= sqrt_p
 
+    if CV_norm is None:
+        CV_norm = score_norm
     # alpha_max ?
     alphas = np.linspace(0., 1., 5)
     LL = np.zeros((5,))
     LL_ = list()
     for (ix, alpha) in enumerate(alphas):
-        cov_learner_ = cov_learner(alpha=alpha, **kwargs)
+        cov_learner_ = cov_learner(alpha=alpha, score_norm=CV_norm,
+                                   **kwargs)
         res_ = Parallel(n_jobs=n_jobs)(delayed(_eval_cov_learner)(
-            X, train_ix, test_ix, model_prec, cov_learner_)
+            X, train_ix, test_ix, model_prec, cov_learner_, ips_flag)
             for train_ix, test_ix in bs)
         LL[ix] = np.mean(np.array(res_))
     LL_.append(LL[2])
@@ -576,7 +575,8 @@ def cross_val(X, method='gl', alpha_tol=1e-4,
             logger.info("refining alpha grid to interval [{}, {}]".format(
                 alphas[0], alphas[-1]))
             for (ix, alpha) in enumerate(alphas[[1, 3]]):
-                cov_learner_ = cov_learner(alpha=alpha, **kwargs)
+                cov_learner_ = cov_learner(alpha=alpha, score_norm=CV_norm,
+                                           **kwargs)
                 res_ = Parallel(n_jobs=n_jobs)(delayed(_eval_cov_learner)(
                     X, train_ix, test_ix, model_prec, cov_learner_, ips_flag)
                     for train_ix, test_ix in bs)
@@ -584,7 +584,17 @@ def cross_val(X, method='gl', alpha_tol=1e-4,
                 LL[ix_] = np.mean(np.array(res_))
             LL_.append(LL[2])
         except StopIteration:
-            return alphas[2], LL_
+            if score_norm == CV_norm:
+                return alphas[2], LL_
+            else:
+                alpha = alphas[2]
+                cov_learner_ = cov_learner(alpha=alpha, score_norm=score_norm,
+                                           **kwargs)
+                res_ = Parallel(n_jobs=n_jobs)(delayed(_eval_cov_learner)(
+                    X, train_ix, test_ix, model_prec, cov_learner_, ips_flag)
+                    for train_ix, test_ix in bs)
+                LL_.append(np.mean(np.array(res_)))
+                return alpha, LL_
 
 
 def _eval_cov_learner(X, train_ix, test_ix, model_prec, cov_learner,
@@ -597,12 +607,15 @@ def _eval_cov_learner(X, train_ix, test_ix, model_prec, cov_learner,
     cov_learner_ = clone(cov_learner)
     if not ips_flag:
         score = cov_learner_.fit(X_train).score(X_test)
-    else:
+    elif cov_learner.score_norm != "ell0":
         # dual split variable contains exact zeros!
         aux_prec = cov_learner_.fit(X_train).auxiliary_prec_
         mask = np.abs(aux_prec) > machine_eps(0.)
         ips = IPS(support=mask, score_norm=cov_learner_.score_norm)
         score = ips.fit(X_train).score(X_test)
+    else:
+        raise ValueError('ell0 scoring in CV_loop and IPS are incompatible')
+
     if cov_learner_.score_norm is not None:
         score *= -1.
     return score
