@@ -556,7 +556,6 @@ def _admm_hgl2(S, htree, alpha, rho=1., tau_inc=1.1, tau_decr=1.1, mu=None,
             for level in np.arange(max_level, 0, -1):
                 # initialise alpha for given level
                 alpha_ = alpha_func(alpha, level)
-                print level, alpha_
                 # get all nodes at specified level
                 node_set = [node_level[0] for node_level in nodes_levels
                             if node_level[1] == level]
