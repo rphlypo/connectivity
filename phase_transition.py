@@ -4,6 +4,7 @@ import scipy.linalg
 
 
 import covariance_learn
+reload(covariance_learn)
 
 
 def _get_mx(a, b, mx_type='small'):
@@ -17,10 +18,10 @@ def _get_mx(a, b, mx_type='small'):
                                             u_bound=abs_bound_b))
         # TODO make this a block form such that the second level is sparse
         return np.array([[1, a, b, b / 2],
-                        [a, 1, b / 2, 0],
-                        [b, b / 2, 1, a],
-                        [b / 2, 0, a, 1]], dtype=np.float)
-    else:
+                         [a, 1, b / 2, 0],
+                         [b, b / 2, 1, a],
+                         [b / 2, 0, a, 1]], dtype=np.float)
+    elif mx_type in {'gael', 'ronald'}:
         mx = np.eye(8, 8)
         mx.flat[8::18] = a
         mx.flat[1::18] = a
@@ -36,11 +37,26 @@ def _get_mx(a, b, mx_type='small'):
             mx[-1, :-2:2] = b / 2
             mx[-2, 1:-2:2] = b / 2
 
-        eigvals = np.linalg.eigvalsh(mx)
-        if np.any(eigvals < 1e-9):
-            raise ValueError('Your combination (a, b) yields ' +
-                             'an ill-conditioned matrix')
-        return mx
+    elif mx_type == 'smith':
+        # communities
+        c = 4
+        #
+        mx = np.identity(c ** 2)
+        # AR model like within community
+        for k in np.arange(c):
+            mx[k * c + 1:(k + 1) * c, k * c] = a
+            mx[k * c, k * c + 1:(k + 1) * c] = a
+        #
+        mx[c::c, 0] = b
+        mx[0, c::c] = b
+
+        plt.matshow(mx)
+    eigvals = scipy.linalg.eigvalsh(mx)
+    if np.any(eigvals < 1e-9):
+        raise ValueError('Your combination (a, b) yields ' +
+                         'an ill-conditioned matrix ' +
+                         '(lambda_min={})'.format(np.min(eigvals)))
+    return mx
 
 
 def eval_grid(a_vec=None, b_vec=None, mx_type="small", **kwargs):
@@ -66,23 +82,30 @@ def eval_grid(a_vec=None, b_vec=None, mx_type="small", **kwargs):
     n = b_vec.size
     rs = np.random.randint(2 ** 32 - 1)
     if mx_type == "small":
-        Z = np.random.normal(size=(1000, 4))
-    else:
-        Z = np.random.normal(size=(1000, 8))
+        dim = 4
+    elif mx_type in {'gael', 'ronald'}:
+        dim = 8
+    elif mx_type == 'smith':
+        dim = 16
+    Z = np.random.normal(size=(1000, dim))
     result = [eval_point(a, b, Z, mx_type=mx_type, random_state=rs,  **kwargs)
               for a in a_vec for b in b_vec]
-    return [np.array(zip(*result)[k]).reshape(m, n).T
+    return [np.array(zip(*result)[k]).reshape((n, m), order='F')
             for k in range(len(zip(*result)))]
 
 
 def eval_point(a, b, Z, alpha_tol=1e-2, n_jobs=1, verbose=0, n_iter=10,
-               score_norm="KL", ips_flag=True, mx_type='small',
+               score_norm="KL", CV_norm="ell0", ips_flag=True, mx_type='small',
                random_state=None):
+    train_size = .02
     try:
-        print "evaluating point({}, {})".format(a, b)
+        print "evaluating point ({}, {})".format(a, b)
         Theta = _get_mx(a, b, mx_type=mx_type)
         eigvals, eigvecs = scipy.linalg.eigh(Theta)
-        M = eigvecs.dot(np.diag(1 / np.sqrt(eigvals))).dot(eigvecs.T)
+        M = eigvecs.dot(np.diag(1. / np.sqrt(eigvals))).dot(eigvecs.T)
+        if score_norm != "ell0":
+            sqrt_p = np.sqrt(Theta.shape[0])
+            Theta = sqrt_p * M
         X = Z.dot(M)
         if mx_type == "small":
             tree1 = [[0, 1], [2, 3]]
@@ -90,9 +113,10 @@ def eval_point(a, b, Z, alpha_tol=1e-2, n_jobs=1, verbose=0, n_iter=10,
                 covariance_learn.cross_val(X, model_prec=Theta,
                                            method='hgl', htree=tree1,
                                            alpha_tol=alpha_tol, n_iter=n_iter,
-                                           train_size=.01, test_size=.5,
+                                           train_size=train_size, test_size=.5,
                                            n_jobs=n_jobs, verbose=verbose,
                                            score_norm=score_norm,
+                                           CV_norm=CV_norm,
                                            random_state=random_state,
                                            ips_flag=ips_flag)
             tree2 = [[0, 2], [1, 3]]
@@ -100,9 +124,10 @@ def eval_point(a, b, Z, alpha_tol=1e-2, n_jobs=1, verbose=0, n_iter=10,
                 covariance_learn.cross_val(X, model_prec=Theta,
                                            method='hgl', htree=tree2,
                                            alpha_tol=alpha_tol, n_iter=n_iter,
-                                           train_size=.01, test_size=.5,
+                                           train_size=train_size, test_size=.5,
                                            n_jobs=n_jobs, verbose=verbose,
                                            score_norm=score_norm,
+                                           CV_norm=CV_norm,
                                            random_state=random_state,
                                            ips_flag=ips_flag)
             tree3 = [[0, 3], [1, 2]]
@@ -110,20 +135,25 @@ def eval_point(a, b, Z, alpha_tol=1e-2, n_jobs=1, verbose=0, n_iter=10,
                 covariance_learn.cross_val(X, model_prec=Theta,
                                            method='hgl', htree=tree3,
                                            alpha_tol=alpha_tol, n_iter=n_iter,
-                                           train_size=.01, test_size=.5,
+                                           train_size=train_size, test_size=.5,
                                            n_jobs=n_jobs, verbose=verbose,
                                            score_norm=score_norm,
+                                           CV_norm=CV_norm,
                                            random_state=random_state,
                                            ips_flag=ips_flag)
         else:
-            tree = [[0, 1], [2, 3], [4, 5], [6, 7]]
+            if mx_type in {'gael', 'ronald'}:
+                tree = [[0, 1], [2, 3], [4, 5], [6, 7]]
+            else:
+                tree = [range(k * 4, (k + 1) * 4) for k in range(4)]
             alpha_star_hgl, LL_hgl = \
                 covariance_learn.cross_val(X, model_prec=Theta,
                                            method='hgl', htree=tree,
                                            alpha_tol=alpha_tol, n_iter=n_iter,
-                                           train_size=.01, test_size=.5,
+                                           train_size=train_size, test_size=.5,
                                            n_jobs=n_jobs, verbose=verbose,
                                            score_norm=score_norm,
+                                           CV_norm=CV_norm,
                                            random_state=random_state,
                                            ips_flag=ips_flag)
 
@@ -131,9 +161,10 @@ def eval_point(a, b, Z, alpha_tol=1e-2, n_jobs=1, verbose=0, n_iter=10,
             covariance_learn.cross_val(X, model_prec=Theta,
                                        method='gl',
                                        alpha_tol=alpha_tol, n_iter=n_iter,
-                                       train_size=.01, test_size=.5,
+                                       train_size=train_size, test_size=.5,
                                        n_jobs=n_jobs, verbose=verbose,
                                        score_norm=score_norm,
+                                       CV_norm=CV_norm,
                                        random_state=random_state,
                                        ips_flag=ips_flag)
         if mx_type == "small":
@@ -143,7 +174,8 @@ def eval_point(a, b, Z, alpha_tol=1e-2, n_jobs=1, verbose=0, n_iter=10,
                                                                   LL_gl[-1])
             return LL_hgl1[-1], LL_hgl2[-1], LL_hgl3[-1], LL_gl[-1]
         else:
-            print "\thgl1: {}, hgl2: {}".format(LL_hgl[-1], LL_gl[-1])
+            print "\thgl (alpha={}): {}\n\t gl (alpha={}): {}".format(
+                alpha_star_hgl, LL_hgl[-1], alpha_star_gl, LL_gl[-1])
             return LL_hgl[-1], LL_gl[-1]
 
     except ValueError:
@@ -165,7 +197,7 @@ def plot_grid(result, extent, ix=[0, -1]):
     else:
         f = result[ix]
         f_max = np.nanmax(f)
-        f_min = 0.
+        f_min = np.nanmin(f)
         cmap = plt.cm.autumn
         cmap2 = plt.cm.gray
         title = 'LogLik(true model | data model)'
@@ -189,12 +221,19 @@ def plot_winner_takes_all(result, extent):
     result_ = np.concatenate([res[..., np.newaxis] for res in result], axis=2)
     # add the minimum in first position so for ties -1 is returned
     # add the minimum of trees in second position so tree-ties return 0
-    result_ = np.concatenate(
-        [np.min(result_, axis=2)[..., np.newaxis],
-         np.min(result_[..., :-1], axis=2)[..., np.newaxis],
-         result_], axis=2)
-    f_ix = np.argmax(result_, axis=2) - 1
-    f_ix[np.isnan(np.sum(result_, axis=2))] = -2
+    if len(result) > 2:
+        result_ = np.concatenate(
+            [np.min(result_, axis=2)[..., np.newaxis],
+             np.min(result_[..., :-1], axis=2)[..., np.newaxis],
+             result_], axis=2)
+        f_ix = np.argmax(result_, axis=2) - 1
+        f_ix[np.isnan(np.sum(result_, axis=2))] = -2
+    else:
+        result_ = np.concatenate(
+            [np.min(result_, axis=2)[..., np.newaxis],
+             result_], axis=2)
+        f_ix = np.argmax(result_, axis=2)
+        f_ix[np.isnan(np.sum(result_, axis=2))] = -1
     plt.figure()
     ax = plt.matshow(f_ix, origin='lower', cmap=plt.cm.jet, extent=extent,
                      fignum=False)
@@ -210,7 +249,7 @@ def plot_winner_takes_all(result, extent):
 
 
 if __name__ == "__main__":
-    N_JOBS = 20
+    N_JOBS = 1  # 20
     K = 1
     N_ITER = K * N_JOBS
     a_vec = np.linspace(0, 1, 5)
@@ -223,7 +262,9 @@ if __name__ == "__main__":
     # model ("KL" returns the *negative* of the symmetrised Kullback-Leibler
     # divergence)
     result = eval_grid(n_jobs=N_JOBS, n_iter=N_ITER, a_vec=a_vec, b_vec=b_vec,
-                       score_norm='ell0', ips_flag=False, mx_type='gael')
+                       score_norm='ell0', CV_norm='ell0', ips_flag=False,
+                       mx_type='smith')
     result = [-res for res in result]
     fig1 = plot_winner_takes_all(result,  extent)
     fig2 = plot_grid(result, extent, ix=[0, -1])
+    fig3 = plot_grid(result, extent, ix=0)
