@@ -277,28 +277,28 @@ class HierarchicalGraphLasso(GraphLasso):
         self.f_vals_ = copy.deepcopy(f_vals_)
         return self
 
-    def _support_recovery_norm(self, X_test):
-        # this returns an ordered list from leaves to root nodes
-        nodes_levels = self.htree_.root_.get_descendants()
-        nodes_levels.sort(key=lambda x: x[1])
-        nodes_levels.reverse()
-        p = len([node for node in nodes_levels if not node[0].get_children()])
-        mask_ = np.zeros((p, p), dtype=np.bool)
+#   def _support_recovery_norm(self, X_test):
+#       # this returns an ordered list from leaves to root nodes
+#       nodes_levels = self.htree_.root_.get_descendants()
+#       nodes_levels.sort(key=lambda x: x[1])
+#       nodes_levels.reverse()
+#       p = len([node for node in nodes_levels if not node[0].get_children()])
+#       mask_ = np.zeros((p, p), dtype=np.bool)
 
-        error_norm = 0
+#       error_norm = 0
 
-        for (node, level) in nodes_levels:
-            if node.complement() is None:
-                continue
-            ix = node.evaluate()
-            for node_c in node.complement():
-                ixc = node_c.evaluate()
-                ixs = np.ix_(ix, ixc)
-                mask_ = np.linalg.norm(X_test[ixs]) > machine_eps(1)
-                data_ = np.linalg.norm(
-                    self.auxiliary_prec_[ixs]) > machine_eps(1)
-                error_norm += np.logical_xor(mask_, data_) * X_test[ixs].size
-        return error_norm
+#       for (node, level) in nodes_levels:
+#           if node.complement() is None:
+#               continue
+#           ix = node.evaluate()
+#           for node_c in node.complement():
+#               ixc = node_c.evaluate()
+#               ixs = np.ix_(ix, ixc)
+#               mask_ = np.linalg.norm(X_test[ixs]) > machine_eps(1)
+#               data_ = np.linalg.norm(
+#                   self.auxiliary_prec_[ixs]) > machine_eps(1)
+#               error_norm += np.logical_xor(mask_, data_) * X_test[ixs].size
+#       return error_norm
 
 
 def _admm_gl(S, alpha, rho=1., tau_inc=2., tau_decr=2., mu=None, tol=1e-6,
