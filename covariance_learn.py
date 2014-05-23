@@ -171,17 +171,17 @@ class GraphLasso(EmpiricalCovariance):
                 test_cov.dot(self.precision_)) / 2.
         elif norm == "ell0":
             # X_test acts as a mask
-            mask = self._extract_mask(X_test)
-            error_norm = (np.sum(np.abs(self.auxiliary_prec_[mask]) >=
-                                 machine_eps(0))) / 2.
+            error_norm = self._support_recovery_norm(X_test)
         else:
             raise NotImplementedError(
                 "Only the following norms are implemented:\n"
                 "spectral, Frobenius, inverse Frobenius, and geodesic")
         return error_norm
 
-    def _extract_mask(self, X_test):
-        return np.abs(X_test) <= machine_eps(0)
+    def _support_recovery_norm(self, X_test):
+        return np.sum(np.logical_xor(
+            np.abs(self.auxiliary_prec_) > machine_eps(0),
+            np.abs(X_test) > machine_eps(0))) / 2
 
 
 class IPS(GraphLasso):
@@ -220,8 +220,17 @@ class IPS(GraphLasso):
 class HierarchicalGraphLasso(GraphLasso):
     def __init__(self, htree, alpha, tol=1e-6, max_iter=1e4, verbose=0,
                  base_estimator=None, scale_2_corr=True, rho=1., mu=None,
-                 score_norm=None, n_jobs=1):
+                 score_norm=None, n_jobs=1, alpha_func=None):
         """ hierarchical version of graph lasso with ell1-2 penalty
+
+        arguments (complimentary to GraphLasso)
+        ---------
+        htree   : embedded lists or HTree object
+            specifies data organisation in 'communities'
+
+        alpha_func : a functional taking alpha and level as arguments
+            this function makes it possible to adapt 'alpha' to the level
+            of evaluation in the tree
 
         extra arguments
         ---------------
@@ -240,14 +249,25 @@ class HierarchicalGraphLasso(GraphLasso):
         self.mu = mu
         self.score_norm = score_norm
         self.n_jobs = n_jobs
+        self.alpha_func = alpha_func
         # needed for the score function of EmpiricalCovariance
         self.store_precision = True
 
     def fit(self, X, y=None, **kwargs):
         S = self._X_to_cov(X)
+
+        if hasattr(self.htree, '__iter__'):
+            tree_list = copy.deepcopy(self.htree)
+            htree = HTree()
+            htree.tree(tree_list)
+            # {htree}._update() is ok for small trees, otherwise use on-the-fly
+            # evaluation with {node}._get_node_values() at each node call
+            htree._update()
+        self.htree_ = htree
         precision_, split_precision_, var_gap_, dual_gap_, f_vals_ =\
-            _admm_hgl(S, self.htree, self.alpha, rho=self.rho, tol=self.tol,
-                      mu=self.mu, max_iter=self.max_iter)
+            _admm_hgl2(S, self.htree_, self.alpha, rho=self.rho, tol=self.tol,
+                       mu=self.mu, max_iter=self.max_iter,
+                       alpha_func=self.alpha_func)
 
         self.precision_ = precision_
         self.auxiliary_prec_ = split_precision_
@@ -257,9 +277,28 @@ class HierarchicalGraphLasso(GraphLasso):
         self.f_vals_ = copy.deepcopy(f_vals_)
         return self
 
-    def _extract_mask(self, X_test=None):
-        # get the block-wise / hierarchical interaction ell-0 mask
-        return _ell0_mask(X_test, self.htree)
+    def _support_recovery_norm(self, X_test):
+        # this returns an ordered list from leaves to root nodes
+        nodes_levels = self.htree_.root_.get_descendants()
+        nodes_levels.sort(key=lambda x: x[1])
+        nodes_levels.reverse()
+        p = len([node for node in nodes_levels if not node[0].get_children()])
+        mask_ = np.zeros((p, p), dtype=np.bool)
+
+        error_norm = 0
+
+        for (node, level) in nodes_levels:
+            if node.complement() is None:
+                continue
+            ix = node.evaluate()
+            for node_c in node.complement():
+                ixc = node_c.evaluate()
+                ixs = np.ix_(ix, ixc)
+                mask_ = np.linalg.norm(X_test[ixs]) > machine_eps(1)
+                data_ = np.linalg.norm(
+                    self.auxiliary_prec_[ixs]) > machine_eps(1)
+                error_norm += np.logical_xor(mask_, data_) * X_test[ixs].size
+        return error_norm
 
 
 def _admm_gl(S, alpha, rho=1., tau_inc=2., tau_decr=2., mu=None, tol=1e-6,
@@ -374,7 +413,7 @@ def _admm_ips(S, support, rho=1., tau_inc=2., tau_decr=2., mu=None, tol=1e-6,
 
 
 def _admm_hgl(S, htree, alpha, rho=1., tau_inc=1.1, tau_decr=1.1, mu=None,
-              tol=1e-6, max_iter=1e2, Xinit=None):
+              tol=1e-6, max_iter=1e2, Xinit=None, alpha_func=None):
     """
     returns:
     -------
@@ -389,6 +428,11 @@ def _admm_hgl(S, htree, alpha, rho=1., tau_inc=1.1, tau_decr=1.1, mu=None,
         normalisation is based on division by the number of elements
     """
     # TODO foresee option to give a list of alphas, one for each level
+    # defaults to the constant function
+    if alpha_func is None:
+        alpha_func = lambda alpha, level: alpha
+        # alpha_func = lambda alpha, level: alpha ** (2. - 1. / level)
+
     p = S.shape[0]
     Z = (1. + rho) / rho * np.identity(p)
     U = np.zeros((p, p))
@@ -402,14 +446,6 @@ def _admm_hgl(S, htree, alpha, rho=1., tau_inc=1.1, tau_decr=1.1, mu=None,
     r_.append(linalg.norm(X - Z))
     s_.append(np.inf)
     iter_count = 0
-    # if a (nested) list is given, create the tree
-    if hasattr(htree, '__iter__'):
-        tree_list = copy.deepcopy(htree)
-        htree = HTree()
-        htree.tree(tree_list)
-        # {htree}._update() is ok for small trees, otherwise use on-the-fly
-        # evaluation with {node}._get_node_values() at each node call
-        htree._update()
     # this returns an ordered list from leaves to root nodes
     nodes_levels = htree.root_.get_descendants()
     nodes_levels.sort(key=lambda x: x[1])
@@ -433,7 +469,7 @@ def _admm_hgl(S, htree, alpha, rho=1., tau_inc=1.1, tau_decr=1.1, mu=None,
                 for node_c in node.complement():
                     ixc = node_c.evaluate()
                     B = Z[np.ix_(ix, ixc)]
-                    alpha_ = alpha * np.sqrt(np.size(B))
+                    alpha_ = alpha_func(alpha, level) * np.sqrt(np.size(B))
                     f_vals_[-1] = f_vals_[-1] + \
                         alpha_ * np.linalg.norm(X[np.ix_(ix, ixc)])
                     if np.linalg.norm(B):
@@ -456,6 +492,122 @@ def _admm_hgl(S, htree, alpha, rho=1., tau_inc=1.1, tau_decr=1.1, mu=None,
                 elif s_[-1] > mu * r_[-1]:
                     rho /= tau_decr
                 U = Y / rho  # newly scaled dual variable
+            iter_count += 1
+            if (_check_convergence(X, Z, Z_old, U, rho, tol_abs=tol) or
+                    iter_count > max_iter):
+                raise StopIteration
+        except StopIteration:
+            return X, Z, r_, s_, f_vals_
+
+
+def _admm_hgl2(S, htree, alpha, rho=1., tau_inc=1.1, tau_decr=1.1, mu=None,
+               tol=1e-6, max_iter=1e2, Xinit=None, alpha_func=None):
+    """
+    returns:
+    -------
+    Z       : numpy.ndarray
+        the split variable with correct support
+
+    r_      : list of floats
+        normalised norm of difference between split variables
+
+    s_      : list of floats
+        convergence of the variable Z in normalised norm
+        normalisation is based on division by the number of elements
+    """
+    # TODO foresee option to give a list of alphas, one for each level
+    # defaults to the constant function
+    if alpha_func is None:
+        alpha_func = lambda alpha, level: alpha
+        # alpha_func = lambda alpha, level: alpha ** (2. - 1. / level)
+
+    p = S.shape[0]
+    Z = (1. + rho) / rho * np.identity(p)
+    U = np.zeros((p, p))
+    if Xinit is None:
+        X = np.identity(p)
+    else:
+        X = Xinit
+    r_ = list()
+    s_ = list()
+    f_vals_ = list()
+    r_.append(linalg.norm(X - Z))
+    s_.append(np.inf)
+    iter_count = 0
+    # this returns an ordered list from leaves to root nodes
+    nodes_levels = htree.root_.get_descendants()
+    nodes_levels.sort(key=lambda x: x[1])
+    nodes_levels.reverse()
+    max_level = nodes_levels[0][1]
+    while True:
+        try:
+            Z_old = Z.copy()
+            # closed form optimization for X
+            eigvals, eigvecs = linalg.eigh(rho * (Z - U) - S)
+            eigvals_ = np.diag(eigvals + (eigvals ** 2 + 4 * rho) ** (1. / 2))
+            X = eigvecs.dot(eigvals_.dot(eigvecs.T)) / (2 * rho)
+            # smooth functional score
+            f_vals_.append(-np.linalg.slogdet(X)[1] + np.sum(X * S))
+            # proximal operator for Z: projection on support
+            Z = U + X
+            # TODO for a given level we could evaluate all in parallel!
+            tmp_mx = Z
+            # 'mounting' in the tree from leaves to root
+            for level in np.arange(max_level, 0, -1):
+                # initialise alpha for given level
+                alpha_ = alpha_func(alpha, level)
+                print level, alpha_
+                # get all nodes at specified level
+                node_set = [node_level[0] for node_level in nodes_levels
+                            if node_level[1] == level]
+                # sort, just as in a sorted glob!
+                node_set.sort(key=lambda x: x.evaluate())
+                p_level = len(node_set)
+                next_tmp_mx = np.zeros((p_level, p_level))
+                desc1_last = 0
+                for (ix1, node1) in enumerate(node_set[:-1]):
+                    desc1 = node1.get_children()
+                    desc1_first = desc1_last
+                    desc1_last += len(desc1) + (len(desc1) == 0)
+                    desc1_ix = np.arange(desc1_first, desc1_last)
+                    desc2_last = desc1_last
+                    for (ix2, node2) in enumerate(node_set[ix1 + 1:]):
+                        desc2 = node2.get_children()
+                        desc2_first = desc2_last
+                        desc2_last += len(desc2) + (len(desc2) == 0)
+                        desc2_ix = np.arange(desc2_first, desc2_last)
+                        ix = node1.evaluate()
+                        ixc = node2.evaluate()
+                        B = tmp_mx[np.ix_(desc1_ix, desc2_ix)]
+                        norm_B = np.linalg.norm(B)
+                        if norm_B:
+                            # needs np.linalg.norm(B) / np.sqrt(np.size(B)) and
+                            # not np.linalg.norm(B) -> independent of block
+                            # size!
+                            numel = len(ix) * len(ixc)
+                            multiplier = (1. - alpha_ * np.sqrt(numel) /
+                                          (rho * norm_B))
+                            multiplier = max(0., multiplier)
+                            Z[np.ix_(ix, ixc)] *= multiplier
+                            Z[np.ix_(ixc, ix)] *= multiplier
+                            next_tmp_mx[ix1, ix1 + 1 + ix2] = \
+                                next_tmp_mx[ix1 + 1 + ix2, ix1] = \
+                                norm_B * multiplier
+                            f_vals_[-1] += alpha_ * norm_B * multiplier
+                tmp_mx = next_tmp_mx
+
+            # update scaled dual variable
+            U = U + X - Z
+            r_.append(linalg.norm(X - Z) / np.sqrt(p ** 2))
+            s_.append(linalg.norm(Z - Z_old))
+
+            if mu is not None:
+                U *= rho  # this is the unscaled Y
+                if r_[-1] > mu * s_[-1]:
+                    rho *= tau_inc
+                elif s_[-1] > mu * r_[-1]:
+                    rho /= tau_decr
+                U /= rho  # newly scaled dual variable
             iter_count += 1
             if (_check_convergence(X, Z, Z_old, U, rho, tol_abs=tol) or
                     iter_count > max_iter):
@@ -495,33 +647,6 @@ def _cov_2_corr(covariance):
     correlation = scale.dot(covariance.dot(scale))
     # guarantee symmetry
     return (correlation + correlation.T) / 2.
-
-
-def _ell0_mask(X_test, htree):
-    if hasattr(htree, '__iter__'):
-        tree_list = copy.deepcopy(htree)
-        htree = HTree()
-        htree.tree(tree_list)
-        # {htree}._update() is ok for small trees, otherwise use on-the-fly
-        # evaluation with {node}._get_node_values() at each node call
-        htree._update()
-    # this returns an ordered list from leaves to root nodes
-    nodes_levels = htree.root_.get_descendants()
-    nodes_levels.sort(key=lambda x: x[1])
-    nodes_levels.reverse()
-    p = len([node for node in nodes_levels if not node[0].get_children()])
-    mask_ = np.zeros((p, p), dtype=np.bool)
-
-    for (node, level) in nodes_levels:
-        if node.complement() is None:
-            continue
-        ix = node.evaluate()
-        for node_c in node.complement():
-            ixc = node_c.evaluate()
-            ixs = np.ix_(ix, ixc)
-            mask_[ixs] = np.linalg.norm(X_test[ixs]) < machine_eps(1)
-            mask_[np.ix_(ixc, ix)] = mask_[ixs].T
-    return mask_
 
 
 def cross_val(X, method='gl', alpha_tol=1e-4,
