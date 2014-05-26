@@ -87,7 +87,7 @@ def eval_grid(a_vec=None, b_vec=None, mx_type="small", **kwargs):
         dim = 8
     elif mx_type == 'smith':
         dim = 16
-    Z = np.random.normal(size=(1000, dim))
+    Z = np.random.normal(size=(100 * dim, dim))
     result = [eval_point(a, b, Z, mx_type=mx_type, random_state=rs,  **kwargs)
               for a in a_vec for b in b_vec]
     return [np.array(zip(*result)[k]).reshape((n, m), order='F')
@@ -97,7 +97,7 @@ def eval_grid(a_vec=None, b_vec=None, mx_type="small", **kwargs):
 def eval_point(a, b, Z, alpha_tol=1e-2, n_jobs=1, verbose=0, n_iter=10,
                score_norm="KL", CV_norm="ell0", ips_flag=True, mx_type='small',
                random_state=None):
-    train_size = .02
+    train_size = .03
     try:
         print "evaluating point ({}, {})".format(a, b)
         Theta = _get_mx(a, b, mx_type=mx_type)
@@ -252,8 +252,8 @@ if __name__ == "__main__":
     N_JOBS = 1  # 20
     K = 1
     N_ITER = K * N_JOBS
-    a_vec = np.linspace(0, 1, 5)
-    b_vec = np.linspace(0, 1, 5)
+    a_vec = np.linspace(0, 1, 101)
+    b_vec = np.linspace(0, 1, 101)
     extent = [(3 * a_vec[0] - a_vec[1]) / 2.,
               (3 * a_vec[-1] - a_vec[-2]) / 2.,
               (3 * b_vec[0] - b_vec[1]) / 2.,
@@ -268,3 +268,5 @@ if __name__ == "__main__":
     fig1 = plot_winner_takes_all(result,  extent)
     fig2 = plot_grid(result, extent, ix=[0, -1])
     fig3 = plot_grid(result, extent, ix=0)
+    # TODO : divide not by numel in covariance learn hgl, but by the number of
+    # non-zero elements ?
