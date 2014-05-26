@@ -40,9 +40,11 @@ class Node(object):
 
     def set_value(self, value):
         self.value_ = value
+        return self
 
     def _set_level(self, level):
         self.level_ = level
+        return self
 
     def get_descendants(self):
         """ return all descendant with their relative level in the tree
