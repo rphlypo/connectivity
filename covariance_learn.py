@@ -263,7 +263,11 @@ class HierarchicalGraphLasso(GraphLasso):
             # {htree}._update() is ok for small trees, otherwise use on-the-fly
             # evaluation with {node}._get_node_values() at each node call
             htree._update()
-        self.htree_ = htree
+            self.htree_ = htree
+        elif isinstance(self.htree, HTree):
+            self.htree_ = self.htree
+        else:
+            raise TypeError("self.htree must be an iterable or a HTree")
         precision_, split_precision_, var_gap_, dual_gap_, f_vals_ =\
             _admm_hgl2(S, self.htree_, self.alpha, rho=self.rho, tol=self.tol,
                        mu=self.mu, max_iter=self.max_iter,
@@ -539,6 +543,8 @@ def _admm_hgl2(S, htree, alpha, rho=1., tau_inc=1.1, tau_decr=1.1, mu=None,
     nodes_levels.sort(key=lambda x: x[1])
     nodes_levels.reverse()
     max_level = nodes_levels[0][1]
+    # all leave node values
+    node_list = htree.root_.evaluate()
     while True:
         try:
             Z_old = Z.copy()
@@ -575,8 +581,12 @@ def _admm_hgl2(S, htree, alpha, rho=1., tau_inc=1.1, tau_decr=1.1, mu=None,
                         desc2_first = desc2_last
                         desc2_last += len(desc2) + (len(desc2) == 0)
                         desc2_ix = np.arange(desc2_first, desc2_last)
-                        ix = node1.evaluate()
-                        ixc = node2.evaluate()
+                        ix = [k1_ for (k1_, node_id) in enumerate(node_list)
+                              for node_ix in node1.evaluate()
+                              if node_id == node_ix]
+                        ixc = [k2_ for (k2_, node_id) in enumerate(node_list)
+                               for node_ix in node2.evaluate()
+                               if node_id == node_ix]
                         B = tmp_mx[np.ix_(desc1_ix, desc2_ix)]
                         norm_B = np.linalg.norm(B)
                         if norm_B:
