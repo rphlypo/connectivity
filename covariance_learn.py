@@ -267,7 +267,7 @@ class HierarchicalGraphLasso(GraphLasso):
         elif isinstance(self.htree, HTree):
             self.htree_ = self.htree
         else:
-            raise TypeError("self.htree must be an iterable or a HTree")
+            raise TypeError("htree must be an iterable or a HTree object")
         precision_, split_precision_, var_gap_, dual_gap_, f_vals_ =\
             _admm_hgl2(S, self.htree_, self.alpha, rho=self.rho, tol=self.tol,
                        mu=self.mu, max_iter=self.max_iter,
@@ -519,7 +519,6 @@ def _admm_hgl2(S, htree, alpha, rho=1., tau_inc=1.1, tau_decr=1.1, mu=None,
         convergence of the variable Z in normalised norm
         normalisation is based on division by the number of elements
     """
-    # TODO foresee option to give a list of alphas, one for each level
     # defaults to the constant function
     if alpha_func is None:
         alpha_func = lambda alpha, level: alpha
@@ -543,7 +542,7 @@ def _admm_hgl2(S, htree, alpha, rho=1., tau_inc=1.1, tau_decr=1.1, mu=None,
     nodes_levels.sort(key=lambda x: x[1])
     nodes_levels.reverse()
     max_level = nodes_levels[0][1]
-    # all leave node values
+    # all leave node values, do not sort (would break data representation)
     node_list = htree.root_.evaluate()
     while True:
         try:
@@ -555,55 +554,48 @@ def _admm_hgl2(S, htree, alpha, rho=1., tau_inc=1.1, tau_decr=1.1, mu=None,
             # smooth functional score
             f_vals_.append(-np.linalg.slogdet(X)[1] + np.sum(X * S))
             # proximal operator for Z: projection on support
-            Z = U + X
+            # Z = U + X
             # TODO for a given level we could evaluate all in parallel!
-            tmp_mx = Z
             # 'mounting' in the tree from leaves to root
-            for level in np.arange(max_level, 0, -1):
+
+            # solve level 0 first
+            alpha_ = alpha_func(alpha, max_level)
+            Z = np.sign(X + U) * np.max(
+                np.reshape(np.concatenate((np.abs(X + U) - alpha_ / rho,
+                                           np.zeros((p, p))), axis=1),
+                           (p, p, -1), order="F"), axis=2)
+
+            f_vals_[-1] += alpha_ * \
+                np.linalg.norm(np.abs(X) - np.diag(np.diag(X)))
+
+            for level in np.arange(max_level - 1, 0, -1):
                 # initialise alpha for given level
                 alpha_ = alpha_func(alpha, level)
                 # get all nodes at specified level
-                node_set = [node_level[0] for node_level in nodes_levels
-                            if node_level[1] == level]
-                # sort, just as in a sorted glob!
-                node_set.sort(key=lambda x: x.evaluate())
-                p_level = len(node_set)
-                next_tmp_mx = np.zeros((p_level, p_level))
-                desc1_last = 0
+                node_set = [node
+                            for (node, lev) in nodes_levels if lev == level]
                 for (ix1, node1) in enumerate(node_set[:-1]):
-                    desc1 = node1.get_children()
-                    desc1_first = desc1_last
-                    desc1_last += len(desc1) + (len(desc1) == 0)
-                    desc1_ix = np.arange(desc1_first, desc1_last)
-                    desc2_last = desc1_last
-                    for (ix2, node2) in enumerate(node_set[ix1 + 1:]):
-                        desc2 = node2.get_children()
-                        desc2_first = desc2_last
-                        desc2_last += len(desc2) + (len(desc2) == 0)
-                        desc2_ix = np.arange(desc2_first, desc2_last)
-                        ix = [k1_ for (k1_, node_id) in enumerate(node_list)
-                              for node_ix in node1.evaluate()
-                              if node_id == node_ix]
-                        ixc = [k2_ for (k2_, node_id) in enumerate(node_list)
-                               for node_ix in node2.evaluate()
-                               if node_id == node_ix]
-                        B = tmp_mx[np.ix_(desc1_ix, desc2_ix)]
-                        norm_B = np.linalg.norm(B)
+                    for node2 in node_set[ix1 + 1:]:
+                        ix = [ix_ for (ix_, node_id1) in enumerate(node_list)
+                              for node_id2 in node1.evaluate()
+                              if node_id1 == node_id2]
+                        ixc = [ix_ for (ix_, node_id1) in enumerate(node_list)
+                               for node_id2 in node2.evaluate()
+                               if node_id1 == node_id2]
+                        logger.debug('ix  = {}\nixc = {}'.format(ix, ixc))
+                        norm_B = np.linalg.norm(Z[np.ix_(ix, ixc)])
+                        norm_X = np.linalg.norm(X[np.ix_(ix, ixc)])
                         if norm_B:
                             # needs np.linalg.norm(B) / np.sqrt(np.size(B)) and
                             # not np.linalg.norm(B) -> independent of block
                             # size!
                             numel = len(ix) * len(ixc)
-                            multiplier = (1. - alpha_ * np.sqrt(numel) /
-                                          (rho * norm_B))
-                            multiplier = max(0., multiplier)
+                            multiplier = max(
+                                1. - alpha_ * np.sqrt(numel) / (rho * norm_B),
+                                0)
                             Z[np.ix_(ix, ixc)] *= multiplier
                             Z[np.ix_(ixc, ix)] *= multiplier
-                            next_tmp_mx[ix1, ix1 + 1 + ix2] = \
-                                next_tmp_mx[ix1 + 1 + ix2, ix1] = \
-                                norm_B * multiplier
-                            f_vals_[-1] += alpha_ * norm_B * multiplier
-                tmp_mx = next_tmp_mx
+                            f_vals_[-1] += alpha_ * norm_X
 
             # update scaled dual variable
             U = U + X - Z
