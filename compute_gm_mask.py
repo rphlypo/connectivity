@@ -12,18 +12,20 @@ import nibabel
 
 try:
     SPM_DIR = os.environ['SPM_DIR']
-except KeyError:
-    raise KeyError("SPM_DIR", "check whether SPM is installed on your " +
-                   "system and the path is on the system's path")
+    print "located SPM at {}".format(SPM_DIR)
+except KeyError as ke:
+    print "{} not found on your system's path".format('SPM_DIR')
+    raise ke
+
 if socket.gethostname == 'drago':
     ROOT_DIR = '/storage'
 elif socket.gethostname()[:3] == 'is':
     ROOT_DIR = '/volatile'
 
-
 grey_matter_template = os.path.join(SPM_DIR, 'tpm', 'grey.nii')
 
 # An image from the HCP
+print "loading subject data to obtain affine for HCP data"
 hcp_mask = nibabel.load(os.path.join(
     ROOT_DIR, 'data/HCP/Q2/585862/MNINonLinear/Results/',
     'rfMRI_REST1_LR/rfMRI_REST1_LR.nii.gz'))
