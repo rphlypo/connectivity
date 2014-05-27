@@ -21,8 +21,6 @@ from nilearn._utils import check_niimg
 from nilearn import masking
 from nilearn import signal
 
-import htree
-
 
 if getuser() == 'rphlypo':
     ROOT_DIR = '/volatile'
@@ -104,23 +102,6 @@ def get_data(subject_dir, labels_img='labels_level_3.nii.gz',
              'session': int(base_name[10]),
              'scan': base_name[12:14]})
     return subj_data
-
-
-def construct_tree(arity=8, depth=3):
-    tree = htree.HTree()
-    tree.tree(hierarchical_tree(arity=arity, depth=depth))
-    tree._update()
-    return tree
-
-
-def hierarchical_tree(arity=8, depth=3):
-    if depth == 0:
-        # We can attribute a random label / ID. This may clash, although very
-        # improbable. Fingers crossed !
-        return np.random.randint(0, 2 ** 32)
-    else:
-        return [hierarchical_tree(arity=arity, depth=depth - 1)
-                for _ in range(arity)]
 
 
 ###############################################################################
