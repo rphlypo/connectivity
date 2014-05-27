@@ -1,5 +1,6 @@
 import collections
 from sklearn.cluster import KMeans
+import numpy as np
 
 
 class Node(object):
@@ -158,3 +159,20 @@ class HierarchicalKMeans(KMeans):
 
     def transform(self, X):
         self.labels_ = self.kmeans.fit(X)
+
+
+def construct_tree(arity=8, depth=3):
+    tree = HTree()
+    tree.tree(hierarchical_tree(arity=arity, depth=depth))
+    tree._update()
+    return tree
+
+
+def hierarchical_tree(arity=8, depth=3):
+    if depth == 0:
+        # We can attribute a random label / ID. This may clash, although very
+        # improbable. Fingers crossed !
+        return np.random.randint(0, 2 ** 31 - 1)
+    else:
+        return [hierarchical_tree(arity=arity, depth=depth - 1)
+                for _ in range(arity)]
