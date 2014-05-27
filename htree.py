@@ -98,24 +98,27 @@ def _get_node_list(node, level=0):
 
 
 class HTree(object):
-    def __init__(self, root=None):
+    def __init__(self, tree_list, root=None):
         """ hierarchical tree object with 'parent'
         """
         self.root = root
+        self.tree_list = tree_list
 
-    def tree(self, tree_list):
+    def create(self):
         """ scan a nested list to form a tree
         """
-        if isinstance(tree_list, collections.Iterable) and len(tree_list) > 1:
+        if (isinstance(self.tree_list, collections.Iterable)
+                and len(self.tree_list) > 1):
             root_ = Node(parent=self.root,
                          children=[])
-            child_nodes = [HTree(root=root_).tree(t).root_
-                           for t in tree_list]
+            child_nodes = [HTree(t, root=root_).create().root_
+                           for t in self.tree_list]
             root_.add_children(child_nodes)
             self.root_ = root_
         else:
-            self.root_ = Node(parent=self.root, value=tree_list,
+            self.root_ = Node(parent=self.root, value=self.tree_list,
                               children=[])
+        self._update()
         return self
 
     def _update(self):
