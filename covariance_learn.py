@@ -1,9 +1,11 @@
 import logging
+reload(logging)
 import sys
 import numpy as np
 import sklearn.utils.extmath
 import copy
 import numbers
+from scipy.ndimage.measurements import mean as label_mean
 
 
 from htree import HTree
@@ -257,13 +259,9 @@ class HierarchicalGraphLasso(GraphLasso):
         S = self._X_to_cov(X)
 
         if hasattr(self.htree, '__iter__'):
-            tree_list = copy.deepcopy(self.htree)
-            htree = HTree()
-            htree.tree(tree_list)
+            self.htree_ = HTree(self.htree).create()
             # {htree}._update() is ok for small trees, otherwise use on-the-fly
             # evaluation with {node}._get_node_values() at each node call
-            htree._update()
-            self.htree_ = htree
         elif isinstance(self.htree, HTree):
             self.htree_ = self.htree
         else:
@@ -319,27 +317,27 @@ def _admm_gl(S, alpha, rho=1., tau_inc=2., tau_decr=2., mu=None, tol=1e-6,
     r_ = list()
     s_ = list()
     f_vals_ = list()
-    r_.append(linalg.norm(X - Z) / (p ** 2))
-    s_.append(np.inf)
-    f_vals_.append(_pen_neg_log_likelihood(X, S, alpha))
     iter_count = 0
     while True:
         try:
             Z_old = Z.copy()
             # closed form optimization for X
             eigvals, eigvecs = linalg.eigh(rho * (Z - U) - S)
-            eigvals_ = np.diag(eigvals + (eigvals ** 2 + 4 * rho) ** (1. / 2))
-            X = eigvecs.dot(eigvals_.dot(eigvecs.T)) / (2 * rho)
+            eigvals /= 2
+            eigvals = (eigvals + (eigvals ** 2 + rho) ** (1. / 2)) / rho
+            X = eigvecs.dot(np.diag(eigvals).dot(eigvecs.T))
+            func_val = -np.sum(np.log(eigvals)) + np.sum(S * X)
             # proximal operator for Z: soft thresholding
             Z = np.sign(X + U) * np.max(
                 np.reshape(np.concatenate((np.abs(X + U) - alpha / rho,
                                            np.zeros((p, p))), axis=1),
                            (p, p, -1), order="F"), axis=2)
+            func_val += np.sum(alpha * np.abs(X))
             # update scaled dual variable
             U = U + X - Z
             r_.append(linalg.norm(X - Z) / (p ** 2))
             s_.append(linalg.norm(Z - Z_old) / (p ** 2))
-            f_vals_.append(_pen_neg_log_likelihood(X, S, alpha))
+            f_vals_.append(func_val)
 
             if mu is not None:
                 Y = U * rho  # this is the unscaled Y
@@ -369,6 +367,8 @@ def _admm_ips(S, support, rho=1., tau_inc=2., tau_decr=2., mu=None, tol=1e-6,
 
     s_      : list of floats
         convergence of the variable Z in normalised norm
+    r_.append(linalg.norm(X - Z))
+    s_.append(np.inf)
         normalisation is based on division by the number of elements
     """
     p = S.shape[0]
@@ -391,15 +391,17 @@ def _admm_ips(S, support, rho=1., tau_inc=2., tau_decr=2., mu=None, tol=1e-6,
             Z_old = Z.copy()
             # closed form optimization for X
             eigvals, eigvecs = linalg.eigh(rho * (Z - U) - S)
-            eigvals_ = np.diag(eigvals + (eigvals ** 2 + 4 * rho) ** (1. / 2))
-            X = eigvecs.dot(eigvals_.dot(eigvecs.T)) / (2 * rho)
+            eigvals = (eigvals + (eigvals ** 2 + rho) ** (1. / 2)) / rho
+            X = eigvecs.dot(np.diag(eigvals).dot(eigvecs.T))
             # proximal operator for Z: projection on support
             Z = support * (X + U)
             # update scaled dual variable
             U = U + X - Z
             r_.append(linalg.norm(X - Z) / (p ** 2))
             s_.append(linalg.norm(Z - Z_old) / dof)
-            f_vals_.append(_pen_neg_log_likelihood(X, S))
+            func_val = -np.linalg.slogdet(support * X)[1] + \
+                np.sum(S * X * support)
+            f_vals_.append(func_val)
 
             if mu is not None:
                 Y = U * rho  # this is the unscaled Y
@@ -534,69 +536,62 @@ def _admm_hgl2(S, htree, alpha, rho=1., tau_inc=1.1, tau_decr=1.1, mu=None,
     r_ = list()
     s_ = list()
     f_vals_ = list()
-    r_.append(linalg.norm(X - Z))
-    s_.append(np.inf)
     iter_count = 0
     # this returns an ordered list from leaves to root nodes
     nodes_levels = htree.root_.get_descendants()
-    nodes_levels.sort(key=lambda x: x[1])
-    nodes_levels.reverse()
-    max_level = nodes_levels[0][1]
+    max_level = max([lev for (_, lev) in nodes_levels])
     # all leave node values, do not sort (would break data representation)
-    node_list = htree.root_.evaluate()
+    node_list = np.array(htree.root_.value_)
+
+    Labels = np.zeros((p, p, max_level), dtype=np.int)
+    for level in np.arange(max_level):
+        label = 0
+        # filter nodes at a given level (0-th layer is 1st level!)
+        node_set = [node for (node, lev) in nodes_levels
+                    if lev == level + 1]
+        for (ix1, node1) in enumerate(node_set[:-1]):
+            for node2 in node_set[ix1 + 1:]:
+                label += 1
+                # find the index of the nodes w.r.t. order at "root_"
+                ix = [np.where(node_list == v)[0][0]
+                      for v in node1.value_]
+                ixc = [np.where(node_list == v)[0][0]
+                       for v in node2.value_]
+                Labels[np.ix_(ix, ixc, [level])] = label
+
     while True:
         try:
             Z_old = Z.copy()
             # closed form optimization for X
             eigvals, eigvecs = linalg.eigh(rho * (Z - U) - S)
-            eigvals_ = np.diag(eigvals + (eigvals ** 2 + 4 * rho) ** (1. / 2))
-            X = eigvecs.dot(eigvals_.dot(eigvecs.T)) / (2 * rho)
+            eigvals /= 2
+            eigvals = (eigvals + (eigvals ** 2 + rho) ** (1. / 2)) / rho
+            X = eigvecs.dot(np.diag(eigvals).dot(eigvecs.T))
             # smooth functional score
-            f_vals_.append(-np.linalg.slogdet(X)[1] + np.sum(X * S))
-            # proximal operator for Z: projection on support
-            # Z = U + X
+            func_val = -np.sum(np.log(eigvals)) + np.sum(X * S)
+            # proximal operator for Z: block norm soft thresholding
+            Z = U + X
             # TODO for a given level we could evaluate all in parallel!
             # 'mounting' in the tree from leaves to root
 
-            # solve level 0 first
-            alpha_ = alpha_func(alpha, max_level)
-            Z = np.sign(X + U) * np.max(
-                np.reshape(np.concatenate((np.abs(X + U) - alpha_ / rho,
-                                           np.zeros((p, p))), axis=1),
-                           (p, p, -1), order="F"), axis=2)
-
-            f_vals_[-1] += alpha_ * \
-                np.linalg.norm(np.abs(X) - np.diag(np.diag(X)))
-
-            for level in np.arange(max_level - 1, 0, -1):
+            for level in np.arange(max_level, 0, -1):
                 # initialise alpha for given level
                 alpha_ = alpha_func(alpha, level)
+                print "alpha(level = {}) = {}".format(alpha_, level)
+                logger.info("alpha(level = {}) = {}".format(alpha_, level))
                 # get all nodes at specified level
-                node_set = [node
-                            for (node, lev) in nodes_levels if lev == level]
-                for (ix1, node1) in enumerate(node_set[:-1]):
-                    for node2 in node_set[ix1 + 1:]:
-                        ix = [ix_ for (ix_, node_id1) in enumerate(node_list)
-                              for node_id2 in node1.evaluate()
-                              if node_id1 == node_id2]
-                        ixc = [ix_ for (ix_, node_id1) in enumerate(node_list)
-                               for node_id2 in node2.evaluate()
-                               if node_id1 == node_id2]
-                        logger.debug('ix  = {}\nixc = {}'.format(ix, ixc))
-                        norm_B = np.linalg.norm(Z[np.ix_(ix, ixc)])
-                        norm_X = np.linalg.norm(X[np.ix_(ix, ixc)])
-                        if norm_B:
-                            # needs np.linalg.norm(B) / np.sqrt(np.size(B)) and
-                            # not np.linalg.norm(B) -> independent of block
-                            # size!
-                            numel = len(ix) * len(ixc)
-                            multiplier = max(
-                                1. - alpha_ * np.sqrt(numel) / (rho * norm_B),
-                                0)
-                            Z[np.ix_(ix, ixc)] *= multiplier
-                            Z[np.ix_(ixc, ix)] *= multiplier
-                            f_vals_[-1] += alpha_ * norm_X
-
+                L = Labels[..., level - 1]
+                multipliers = np.zeros((len(np.unique(L)) - 1,))
+                norms_ = np.sqrt(label_mean(Z ** 2, labels=L,
+                                            index=np.unique(L[L > 0])))
+                Xnorms = np.sqrt(label_mean(X ** 2, labels=L,
+                                            index=np.unique(L[L > 0])))
+                tmp = rho * norms_ - alpha_
+                multipliers[tmp > 0] = tmp[tmp > 0] / (tmp[tmp > 0] + alpha)
+                multipliers = np.concatenate((np.array([1.]), multipliers))
+                Z = multipliers[L + L.T] * Z
+                func_val += 2 * alpha_ * np.sum(Xnorms)
+            f_vals_.append(func_val)
             # update scaled dual variable
             U = U + X - Z
             r_.append(linalg.norm(X - Z) / np.sqrt(p ** 2))
@@ -655,7 +650,7 @@ def cross_val(X, method='gl', alpha_tol=1e-4,
               model_prec=None, verbose=0, n_jobs=1,
               random_state=None, ips_flag=True,
               score_norm="KL", CV_norm=None,
-              **kwargs):
+              optim_h=False, **kwargs):
     from sklearn import cross_validation
     from joblib import Parallel, delayed
     # logging.ERROR is at level 40
@@ -671,6 +666,10 @@ def cross_val(X, method='gl', alpha_tol=1e-4,
         cov_learner = GraphLasso
     elif method == 'hgl':
         cov_learner = HierarchicalGraphLasso
+        tree = kwargs['htree']
+        if hasattr(tree, '__iter__'):
+            tree = HTree(tree).create()
+        max_level = max([lev for (_, lev) in tree.root_.get_descendants()])
     elif method == 'ips':
         cov_learner = IPS
 
@@ -688,39 +687,95 @@ def cross_val(X, method='gl', alpha_tol=1e-4,
             for train_ix, test_ix in bs)
         LL[ix] = np.mean(np.array(res_))
     LL_.append(LL[2])
+    first_run_alpha = True
     while True:
         try:
+            logger.info("refining alpha grid to interval [{}, {}]".format(
+                alphas[0], alphas[-1]))
+            for (ix, alpha) in enumerate(alphas):
+                if not first_run_alpha and ix in [0, 2, 4]:
+                    continue
+
+                if method != 'hgl' or not optim_h:
+                    cov_learner_ = cov_learner(alpha=alpha, score_norm=CV_norm,
+                                               **kwargs)
+                    res_ = Parallel(n_jobs=n_jobs)(delayed(_eval_cov_learner)(
+                        X, train_ix, test_ix, model_prec, cov_learner_,
+                        ips_flag)
+                        for train_ix, test_ix in bs)
+                else:
+                    LLh = np.zeros((5,))
+                    hs = np.linspace(-2, 2, 5)
+                    first_run_h = True
+                    while True:
+                        try:
+                            for (ixh, h) in enumerate(hs):
+                                if not first_run_h and ixh in [0, 2, 4]:
+                                    continue
+                                cov_learner_h = cov_learner(
+                                    alpha=alpha, score_norm=CV_norm,
+                                    alpha_func=alpha_func_(h, max_level),
+                                    **kwargs)
+                                res_h = Parallel(n_jobs=n_jobs)(
+                                    delayed(_eval_cov_learner)(
+                                        X, train_ix, test_ix, model_prec,
+                                        cov_learner_h, ips_flag)
+                                    for train_ix, test_ix in bs)
+                                LLh[ixh] = np.mean(np.array(res_h))
+                            max_ixh = min(max(np.argmax(LLh), 1), 3)
+                            LLh[0] = LLh[max_ixh - 1]
+                            LLh[4] = LLh[max_ixh + 1]
+                            LLh[2] = LLh[max_ixh]
+                            hs = np.linspace(h[max_ixh - 1], h[max_ixh + 1], 5)
+                            if LLh[4] - LLh[0] < .1:
+                                raise StopIteration
+                        except StopIteration:
+                            res_ = LLh[2]
+                        first_run_h = False
+
+                LL[ix] = np.mean(np.array(res_))
+
             max_ix = min(max(np.argmax(LL), 1), 3)
             LL[0] = LL[max_ix - 1]
             LL[4] = LL[max_ix + 1]
             LL[2] = LL[max_ix]
             LL[1] = LL[3] = 0.
             alphas = np.linspace(alphas[max_ix - 1], alphas[max_ix + 1], 5)
-            if alphas[-1] - alphas[0] < alpha_tol:
+            if alphas[4] - alphas[0] < alpha_tol:
                 raise StopIteration
-            logger.info("refining alpha grid to interval [{}, {}]".format(
-                alphas[0], alphas[-1]))
-            for (ix, alpha) in enumerate(alphas[[1, 3]]):
-                cov_learner_ = cov_learner(alpha=alpha, score_norm=CV_norm,
-                                           **kwargs)
-                res_ = Parallel(n_jobs=n_jobs)(delayed(_eval_cov_learner)(
-                    X, train_ix, test_ix, model_prec, cov_learner_, ips_flag)
-                    for train_ix, test_ix in bs)
-                ix_ = 2 * ix + 1
-                LL[ix_] = np.mean(np.array(res_))
             LL_.append(LL[2])
         except StopIteration:
             if score_norm == CV_norm:
-                return alphas[2], LL_
+                if method != 'hgl' or not optim_h:
+                    return alphas[2], LL_
+                else:
+                    return alphas[2], LL_, hs[2]
             else:
                 alpha = alphas[2]
-                cov_learner_ = cov_learner(alpha=alpha, score_norm=score_norm,
-                                           **kwargs)
-                res_ = Parallel(n_jobs=n_jobs)(delayed(_eval_cov_learner)(
-                    X, train_ix, test_ix, model_prec, cov_learner_, ips_flag)
-                    for train_ix, test_ix in bs)
-                LL_.append(np.mean(np.array(res_)))
-                return alpha, LL_
+                if method != 'hgl' or not optim_h:
+                    cov_learner_ = cov_learner(alpha=alpha,
+                                               score_norm=score_norm,
+                                               **kwargs)
+                    res_ = Parallel(n_jobs=n_jobs)(
+                        delayed(_eval_cov_learner)(
+                            X, train_ix, test_ix, model_prec, cov_learner_,
+                            ips_flag)
+                        for train_ix, test_ix in bs)
+                    LL_star = np.mean(np.array(res_))
+                    return alpha, LL_, LL_star
+                else:
+                    cov_learner_ = cov_learner(
+                        alpha=alpha, score_norm=score_norm,
+                        alpha_func=alpha_func_(hs[2], max_level),
+                        **kwargs)
+                    res_ = Parallel(n_jobs=n_jobs)(
+                        delayed(_eval_cov_learner)(
+                            X, train_ix, test_ix, model_prec, cov_learner_,
+                            ips_flag)
+                        for train_ix, test_ix in bs)
+                    LL_star = np.mean(np.array(res_))
+                    return alpha, LL_, hs[2], LL_star
+        first_run_alpha = False
 
 
 def _eval_cov_learner(X, train_ix, test_ix, model_prec, cov_learner,
@@ -745,6 +800,11 @@ def _eval_cov_learner(X, train_ix, test_ix, model_prec, cov_learner,
     if cov_learner_.score_norm is not None:
         score *= -1.
     return score
+
+
+def alpha_func_(h, max_level):
+    return lambda a, lev: a ** ((max_level - 1 + 10 ** h) /
+                                (lev - 1 + 10 ** h))
 
 
 def machine_eps(f):
