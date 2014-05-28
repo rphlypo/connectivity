@@ -50,7 +50,6 @@ def _get_mx(a, b, mx_type='small'):
         mx[c::c, 0] = b
         mx[0, c::c] = b
 
-        plt.matshow(mx)
     eigvals = scipy.linalg.eigvalsh(mx)
     if np.any(eigvals < 1e-9):
         raise ValueError('Your combination (a, b) yields ' +
