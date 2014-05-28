@@ -645,10 +645,10 @@ def _cov_2_corr(covariance):
     return (correlation + correlation.T) / 2.
 
 
-def cross_val(X, method='gl', alpha_tol=1e-4,
+def cross_val(X, method='gl', alpha_tol=1e-2,
               n_iter=100, train_size=.1, test_size=.5,
               model_prec=None, verbose=0, n_jobs=1,
-              random_state=None, ips_flag=True,
+              random_state=None, ips_flag=False,
               score_norm="KL", CV_norm=None,
               optim_h=False, **kwargs):
     from sklearn import cross_validation
