@@ -165,10 +165,13 @@ class HierarchicalKMeans(KMeans):
 
 
 def construct_tree(arity=8, depth=3):
-    tree = HTree()
-    tree.tree(hierarchical_tree(arity=arity, depth=depth))
-    tree._update()
-    return tree
+    while True:
+        try:
+            tree = HTree(hierarchical_tree(arity=arity, depth=depth)).create()
+            if len(np.unique(tree.root_.value_)) == len(tree.root_.value_):
+                raise StopIteration
+        except StopIteration:
+            return tree
 
 
 def hierarchical_tree(arity=8, depth=3):
