@@ -6,13 +6,13 @@ import sklearn.utils.extmath
 import copy
 import numbers
 from scipy.ndimage.measurements import mean as label_mean
-
+import scipy.special
 
 from htree import HTree
 from scipy import linalg
 from sklearn.base import clone
 from sklearn.covariance.empirical_covariance_ import EmpiricalCovariance
-
+from functools import partial
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.StreamHandler(sys.stderr))
@@ -523,8 +523,8 @@ def _admm_hgl2(S, htree, alpha, rho=1., tau_inc=1.1, tau_decr=1.1, mu=None,
     """
     # defaults to the constant function
     if alpha_func is None:
-        alpha_func = lambda alpha, level: alpha
-        # alpha_func = lambda alpha, level: alpha ** (2. - 1. / level)
+        # alpha_func = lambda alpha, level: alpha
+        alpha_func = lambda alpha, level: alpha ** (2. - 1. / level)
 
     p = S.shape[0]
     Z = (1. + rho) / rho * np.identity(p)
@@ -558,7 +558,6 @@ def _admm_hgl2(S, htree, alpha, rho=1., tau_inc=1.1, tau_decr=1.1, mu=None,
                 ixc = [np.where(node_list == v)[0][0]
                        for v in node2.value_]
                 Labels[np.ix_(ix, ixc, [level])] = label
-
     while True:
         try:
             Z_old = Z.copy()
@@ -577,8 +576,8 @@ def _admm_hgl2(S, htree, alpha, rho=1., tau_inc=1.1, tau_decr=1.1, mu=None,
             for level in np.arange(max_level, 0, -1):
                 # initialise alpha for given level
                 alpha_ = alpha_func(alpha, level)
-                print "alpha(level = {}) = {}".format(alpha_, level)
-                logger.info("alpha(level = {}) = {}".format(alpha_, level))
+                # print "alpha(level = {}) = {}".format(level, alpha_)
+                logger.info("alpha(level = {}) = {}".format(level, alpha_))
                 # get all nodes at specified level
                 L = Labels[..., level - 1]
                 multipliers = np.zeros((len(np.unique(L)) - 1,))
@@ -645,10 +644,10 @@ def _cov_2_corr(covariance):
     return (correlation + correlation.T) / 2.
 
 
-def cross_val(X, method='gl', alpha_tol=1e-4,
+def cross_val(X, method='gl', alpha_tol=1e-2,
               n_iter=100, train_size=.1, test_size=.5,
               model_prec=None, verbose=0, n_jobs=1,
-              random_state=None, ips_flag=True,
+              random_state=None, ips_flag=False,
               score_norm="KL", CV_norm=None,
               optim_h=False, **kwargs):
     from sklearn import cross_validation
@@ -679,21 +678,24 @@ def cross_val(X, method='gl', alpha_tol=1e-4,
     alphas = np.linspace(0., 1., 5)
     LL = np.zeros((5,))
     LL_ = list()
-    for (ix, alpha) in enumerate(alphas):
-        cov_learner_ = cov_learner(alpha=alpha, score_norm=CV_norm,
-                                   **kwargs)
-        res_ = Parallel(n_jobs=n_jobs)(delayed(_eval_cov_learner)(
-            X, train_ix, test_ix, model_prec, cov_learner_, ips_flag)
-            for train_ix, test_ix in bs)
-        LL[ix] = np.mean(np.array(res_))
-    LL_.append(LL[2])
+#   for (ix, alpha) in enumerate(alphas):
+#       cov_learner_ = cov_learner(alpha=alpha, score_norm=CV_norm,
+#                                  **kwargs)
+#       res_ = Parallel(n_jobs=n_jobs)(delayed(_eval_cov_learner)(
+#           X, train_ix, test_ix, model_prec, cov_learner_, ips_flag)
+#           for train_ix, test_ix in bs)
+#       LL[ix] = np.mean(np.array(res_))
+#   LL_.append(LL[2])
     first_run_alpha = True
     while True:
         try:
+            print "refining alpha grid to interval [{}, {}]".format(
+                alphas[0], alphas[-1])
             logger.info("refining alpha grid to interval [{}, {}]".format(
                 alphas[0], alphas[-1]))
             for (ix, alpha) in enumerate(alphas):
                 if not first_run_alpha and ix in [0, 2, 4]:
+                    print "alpha[{}] = {}, already computed".format(ix, alpha)
                     continue
 
                 if method != 'hgl' or not optim_h:
@@ -703,18 +705,23 @@ def cross_val(X, method='gl', alpha_tol=1e-4,
                         X, train_ix, test_ix, model_prec, cov_learner_,
                         ips_flag)
                         for train_ix, test_ix in bs)
+                    LL[ix] = np.mean(np.array(res_))
                 else:
                     LLh = np.zeros((5,))
-                    hs = np.linspace(-2, 2, 5)
+                    hs = np.linspace(1e-3, 1., 5)
                     first_run_h = True
                     while True:
                         try:
+                            print "\trefining h grid to " +\
+                                "interval [{}, {}]".format(
+                                    hs[0], hs[-1])
                             for (ixh, h) in enumerate(hs):
                                 if not first_run_h and ixh in [0, 2, 4]:
                                     continue
                                 cov_learner_h = cov_learner(
                                     alpha=alpha, score_norm=CV_norm,
-                                    alpha_func=alpha_func_(h, max_level),
+                                    alpha_func=partial(_alpha_func, h=h,
+                                                       max_level=max_level),
                                     **kwargs)
                                 res_h = Parallel(n_jobs=n_jobs)(
                                     delayed(_eval_cov_learner)(
@@ -726,14 +733,13 @@ def cross_val(X, method='gl', alpha_tol=1e-4,
                             LLh[0] = LLh[max_ixh - 1]
                             LLh[4] = LLh[max_ixh + 1]
                             LLh[2] = LLh[max_ixh]
-                            hs = np.linspace(h[max_ixh - 1], h[max_ixh + 1], 5)
-                            if LLh[4] - LLh[0] < .1:
+                            hs = np.linspace(hs[max_ixh - 1],
+                                             hs[max_ixh + 1], 5)
+                            if hs[4] - hs[0] < .5:
                                 raise StopIteration
                         except StopIteration:
-                            res_ = LLh[2]
+                            LL[ix] = LLh[2]
                         first_run_h = False
-
-                LL[ix] = np.mean(np.array(res_))
 
             max_ix = min(max(np.argmax(LL), 1), 3)
             LL[0] = LL[max_ix - 1]
@@ -764,9 +770,11 @@ def cross_val(X, method='gl', alpha_tol=1e-4,
                     LL_star = np.mean(np.array(res_))
                     return alpha, LL_, LL_star
                 else:
+                    h = hs[2]
                     cov_learner_ = cov_learner(
                         alpha=alpha, score_norm=score_norm,
-                        alpha_func=alpha_func_(hs[2], max_level),
+                        alpha_func=partial(_alpha_func, h=h,
+                                           max_level=max_level),
                         **kwargs)
                     res_ = Parallel(n_jobs=n_jobs)(
                         delayed(_eval_cov_learner)(
@@ -797,14 +805,17 @@ def _eval_cov_learner(X, train_ix, test_ix, model_prec, cov_learner,
     else:
         raise ValueError('ell0 scoring in CV_loop and IPS are incompatible')
 
+    # make scores maximal at optimum
     if cov_learner_.score_norm is not None:
         score *= -1.
     return score
 
 
-def alpha_func_(h, max_level):
-    return lambda a, lev: a ** ((max_level - 1 + 10 ** h) /
-                                (lev - 1 + 10 ** h))
+def _alpha_func(a, lev, h=1., max_level=1.):
+    C = scipy.special.binom(max_level, lev)
+    beta1 = scipy.special.beta(lev + h, max_level - lev + 1)
+    beta2 = scipy.special.beta(h, 1)
+    return a * C * beta1 / beta2
 
 
 def machine_eps(f):

@@ -3,16 +3,19 @@ Apply a divisive K-means strategy to have a hierarchical set of parcels
 """
 import glob
 import os
+import socket
 
 from multiprocessing import cpu_count
 from getpass import getuser
 
 import numpy as np
 from joblib import Memory, Parallel, delayed
+import scipy.linalg
 
 from sklearn.utils.extmath import randomized_svd
 from sklearn.cluster import MiniBatchKMeans, KMeans
 import nibabel
+import covariance_learn as cvl
 
 from nilearn.decomposition.multi_pca import MultiPCA
 from nilearn.input_data import NiftiMasker, NiftiLabelsMasker
@@ -21,6 +24,7 @@ from nilearn._utils import check_niimg
 from nilearn import masking
 from nilearn import signal
 
+import htree
 
 if getuser() == 'rphlypo':
     ROOT_DIR = '/volatile'
@@ -31,6 +35,8 @@ subject_dirs = sorted(glob.glob(
     os.path.join(ROOT_DIR, 'data/HCP/Q2/*/MNINonLinear/Results')))
 
 N_JOBS = min(cpu_count() - 4, 36)
+
+TREE = htree.construct_tree()
 
 
 def out_brain_confounds(epi_img, mask_img):
@@ -105,7 +111,7 @@ def get_data(subject_dir, labels_img='labels_level_3.nii.gz',
 
 
 ###############################################################################
-if getuser() == 'rphlypo':
+if getuser() == 'rphlypo' and socket.gethostname() == 'is151225':
     mem = Memory(cachedir='/volatile/workspace/tmp/connectivity_joblib')
 else:
     mem = Memory(cachedir='/storage/workspace/tmp/gael_joblib')
@@ -141,6 +147,46 @@ def do_k_means(data, n_clusters):
                      n_jobs=N_JOBS, max_iter=500, tol=1e-5, n_init=40)
     k_means.fit(data.T)
     return k_means.labels_
+
+
+def compute_optimal_params(subject_dir, method='hgl', **kwargs):
+    get_data_ = mem.cache(get_data)
+    subj_data = get_data_(subject_dir)
+    # random session for training
+    sess_ix = np.random.randint(2) + 1
+    X = np.concatenate([d["data"] for d in subj_data
+                        if d["session"] == sess_ix], axis=0)
+    # complementary session
+    Y = np.concatenate([d["data"] for d in subj_data
+                        if d["session"] == 3 - sess_ix], axis=0)
+    Theta = scipy.linalg.inv(Y.T.dot(Y) / Y.shape[0])
+    return cvl.cross_val(X, method=method, alpha_tol=1e-2, n_iter=10,
+                         optim_h=True, train_size=.2, model_prec=Theta,
+                         n_jobs=min({N_JOBS, 10}), random_state=12345,
+                         tol=1e-3, **kwargs)
+
+
+def compare_hgl_gl(subject_dir=subject_dirs):
+    results = {'hgl': {'score': [], 'alpha': [], 'h': []},
+               'gl': {'score': [], 'alpha': []}}
+    comp_opt_params = mem.cache(compute_optimal_params)
+    if not hasattr(subject_dir, '__iter__'):
+        subject_dir = [subject_dir]
+#   res1 = Parallel(n_jobs=6)(delayed(comp_opt_params)(
+#       sd, method='hgl', htree=TREE) for sd in subject_dir)
+    res1 = comp_opt_params(subject_dir[0], method='hgl', htree=TREE)
+    res = zip(*res1)
+    results['hgl']['score'] = [r[-1] for r in res[1]]
+    results['hgl']['alpha'] = res[0]
+    results['hgl']['h'] = res[2]
+#   res2 = Parallel(n_jobs=6)(delayed(comp_opt_params)(
+#       sd, method='gl') for sd in subject_dir)
+    res2 = comp_opt_params(subject_dir[0], method='gl')
+    res = zip(*res2)
+    results['gl']['score'] = [r[-1] for r in res[1]]
+    results['gl']['alpha'] = res[0]
+    return results
+
 
 if __name__ == "__main__":
     # Run a first call outside parallel computing, to debug easily
