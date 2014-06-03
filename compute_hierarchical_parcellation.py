@@ -17,6 +17,8 @@ from sklearn.cluster import MiniBatchKMeans, KMeans
 import nibabel
 import covariance_learn as cvl
 
+from sklearn.covariance import LedoitWolf
+
 from nilearn.decomposition.multi_pca import MultiPCA
 from nilearn.input_data import NiftiMasker, NiftiLabelsMasker
 from nilearn.image import high_variance_confounds
@@ -160,8 +162,9 @@ def compute_optimal_params(subject_dir, method='hgl', **kwargs):
     Y = np.concatenate([d["data"] for d in subj_data
                         if d["session"] == 3 - sess_ix], axis=0)
     Theta = scipy.linalg.inv(Y.T.dot(Y) / Y.shape[0])
-    return cvl.cross_val(X, method=method, alpha_tol=1e-2, n_iter=10,
-                         optim_h=True, train_size=.2, model_prec=Theta,
+    return cvl.cross_val(X, method=method, alpha_tol=1e-2, n_iter=1,
+                         optim_h=True, train_size=.99, test_size=0.01,
+                         model_prec=Theta,
                          n_jobs=min({N_JOBS, 10}), random_state=12345,
                          tol=1e-3, **kwargs)
 
@@ -174,7 +177,8 @@ def compare_hgl_gl(subject_dir=subject_dirs):
         subject_dir = [subject_dir]
 #   res1 = Parallel(n_jobs=6)(delayed(comp_opt_params)(
 #       sd, method='hgl', htree=TREE) for sd in subject_dir)
-    res1 = comp_opt_params(subject_dir[0], method='hgl', htree=TREE)
+    res1 = comp_opt_params(subject_dir[0], method='hgl', htree=TREE,
+                           base_estimator=LedoitWolf(assume_centered=True))
     res = zip(*res1)
     results['hgl']['score'] = [r[-1] for r in res[1]]
     results['hgl']['alpha'] = res[0]
