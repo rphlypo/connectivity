@@ -700,7 +700,7 @@ def cross_val(X, method='gl', alpha_tol=1e-2,
                 if not first_run_alpha and ix in [0, 2, 4]:
                     print "alpha[{}] = {}, already computed".format(ix, alpha)
                     continue
-                print "computing for alpha[{}] = {}".format(ix, alpha)
+
                 if method != 'hgl' or not optim_h:
                     cov_learner_ = cov_learner(alpha=alpha, score_norm=CV_norm,
                                                **kwargs)
@@ -715,7 +715,7 @@ def cross_val(X, method='gl', alpha_tol=1e-2,
                     first_run_h = True
                     while True:
                         try:
-                            print "\trefining h-grid to " +\
+                            print "\trefining h grid to " +\
                                 "interval [{}, {}]".format(
                                     hs[0], hs[-1])
                             for (ixh, h) in enumerate(hs):
@@ -738,12 +738,19 @@ def cross_val(X, method='gl', alpha_tol=1e-2,
                             LLh[2] = LLh[max_ixh]
                             hs = np.linspace(hs[max_ixh - 1],
                                              hs[max_ixh + 1], 5)
+<<<<<<< HEAD
                             if hs[4] - hs[0] < .1:
                                 raise StopIteration
                         except StopIteration:
                             LL[ix] = np.min(LLh)
                             h_opt = hs[np.argmin(LLh)]
                             break
+=======
+                            if hs[4] - hs[0] < .5:
+                                raise StopIteration
+                        except StopIteration:
+                            LL[ix] = LLh[2]
+>>>>>>> parent of 1e370d3... updated the alpha_func definition
                         first_run_h = False
 
             max_ix = min(max(np.argmax(LL), 1), 3)
@@ -816,6 +823,7 @@ def _eval_cov_learner(X, train_ix, test_ix, model_prec, cov_learner,
     return score
 
 
+<<<<<<< HEAD
 def _alpha_func(alpha, lev, h=1., max_level=1.):
     if h > machine_eps(0):
         g1 = gamma_func(max_level - lev + h)
@@ -827,6 +835,13 @@ def _alpha_func(alpha, lev, h=1., max_level=1.):
                                 dtype=np.float)
     else:
         return alpha * np.float(lev == max_level)
+=======
+def _alpha_func(a, lev, h=1., max_level=1.):
+    C = scipy.special.binom(max_level, lev)
+    beta1 = scipy.special.beta(lev + h, max_level - lev + 1)
+    beta2 = scipy.special.beta(h, 1)
+    return a * C * beta1 / beta2
+>>>>>>> parent of 1e370d3... updated the alpha_func definition
 
 
 def machine_eps(f):
