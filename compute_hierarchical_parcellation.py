@@ -177,15 +177,15 @@ def compare_hgl_gl(subject_dir=subject_dirs):
         subject_dir = [subject_dir]
 #   res1 = Parallel(n_jobs=6)(delayed(comp_opt_params)(
 #       sd, method='hgl', htree=TREE) for sd in subject_dir)
-    res1 = [comp_opt_params(sd, method='hgl', htree=TREE)
-            for sd in subject_dir]
+    res1 = comp_opt_params(subject_dir[0], method='hgl', htree=TREE,
+                           base_estimator=LedoitWolf(assume_centered=True))
     res = zip(*res1)
     results['hgl']['score'] = [r[-1] for r in res[1]]
     results['hgl']['alpha'] = res[0]
     results['hgl']['h'] = res[2]
 #   res2 = Parallel(n_jobs=6)(delayed(comp_opt_params)(
 #       sd, method='gl') for sd in subject_dir)
-    res2 = [comp_opt_params(sd, method='gl') for sd in subject_dir]
+    res2 = comp_opt_params(subject_dir[0], method='gl')
     res = zip(*res2)
     results['gl']['score'] = [r[-1] for r in res[1]]
     results['gl']['alpha'] = res[0]
