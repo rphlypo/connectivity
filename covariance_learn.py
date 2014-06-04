@@ -737,7 +737,11 @@ def cross_val(X, method='gl', alpha_tol=1e-2,
                                              hs[max_ixh + 1], 5)
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
                             if hs[4] - hs[0] < .1:
+=======
+                            if hs[4] - hs[0] < .25:
+>>>>>>> parent of 41dabd6... temporary back-up, with bug fix in covariance_learn
 =======
                             if hs[4] - hs[0] < .25:
 >>>>>>> parent of 41dabd6... temporary back-up, with bug fix in covariance_learn
@@ -826,6 +830,7 @@ def _eval_cov_learner(X, train_ix, test_ix, model_prec, cov_learner,
 <<<<<<< HEAD
 def _alpha_func(alpha, lev, h=1., max_level=1.):
 <<<<<<< HEAD
+<<<<<<< HEAD
     if h > machine_eps(0):
         g1 = gamma_func(max_level - lev + h)
         g2 = gamma_func(max_level - lev + 1)
@@ -844,10 +849,15 @@ def _alpha_func(a, lev, h=1., max_level=1.):
     return a * C * beta1 / beta2
 >>>>>>> parent of 1e370d3... updated the alpha_func definition
 =======
+=======
+>>>>>>> parent of 41dabd6... temporary back-up, with bug fix in covariance_learn
     C = scipy.special.binom(max_level - 1, max_level - lev)
     beta1 = scipy.special.beta(max_level - lev + h, lev)
     beta2 = scipy.special.beta(h, max_level)
     return alpha * C * beta1 / beta2
+<<<<<<< HEAD
+>>>>>>> parent of 41dabd6... temporary back-up, with bug fix in covariance_learn
+=======
 >>>>>>> parent of 41dabd6... temporary back-up, with bug fix in covariance_learn
 
 
