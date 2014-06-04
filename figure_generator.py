@@ -265,6 +265,13 @@ if __name__ == "__main__":
 
     Y = C
 
+    hgl = covariance_learn.HierarchicalGraphLasso(
+        alpha=.2, htree=tree, alpha_func=alpha_func_(h=0., max_level=2))
+    print "hgl: {}".format(hgl.fit(X).score(Y))
+
+    gl = covariance_learn.GraphLasso(alpha=.2)
+    print " gl: {}".format(gl.fit(X).score(Y))
+    raise StopIteration
     plot_covariances(X, Theta, Y)
 
     scores, score_gl, alpha_star, h_star = grid_evaluation(
