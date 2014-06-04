@@ -50,7 +50,7 @@ class GraphLasso(EmpiricalCovariance):
         rho: positive scalar
             ressemblance enforcing penalty between split variables
     """
-    def __init__(self, alpha, tol=1e-6, max_iter=100, verbose=0,
+    def __init__(self, alpha, tol=1e-6, max_iter=1e4, verbose=0,
                  base_estimator=None,
                  scale_2_corr=True, rho=1., mu=None, score_norm=None):
         self.alpha = alpha
@@ -309,7 +309,7 @@ class HierarchicalGraphLasso(GraphLasso):
 def _admm_gl(S, alpha, rho=1., tau_inc=2., tau_decr=2., mu=None, tol=1e-6,
              max_iter=100, Xinit=None):
     p = S.shape[0]
-    Z = (1 + rho) * np.identity(p)
+    Z = (1. + rho) / rho * np.identity(p)
     U = np.zeros((p, p))
     if Xinit is None:
         X = np.identity(p)
@@ -331,10 +331,12 @@ def _admm_gl(S, alpha, rho=1., tau_inc=2., tau_decr=2., mu=None, tol=1e-6,
             X = eigvecs.dot(np.diag(eigvals).dot(eigvecs.T))
             func_val = -np.sum(np.log(eigvals)) + np.sum(S * X)
             # proximal operator for Z: soft thresholding
-            Z = np.sign(X + U) * np.max(
-                np.reshape(np.concatenate((np.abs(X + U) - alpha / rho,
-                                           np.zeros((p, p))), axis=1),
-                           (p, p, -1), order="F"), axis=2)
+            tmp = np.abs(X + U) - alpha / rho
+            Z = np.sign(X + U) * tmp * (tmp > 0)
+#           Z = np.sign(X + U) * np.max(
+#               np.reshape(np.concatenate((np.abs(X + U) - alpha / rho,
+#                                          np.zeros((p, p))), axis=1),
+#                          (p, p, -1), order="F"), axis=2)
             func_val += np.sum(alpha * np.abs(X))
             # update scaled dual variable
             U = U + X - Z
@@ -421,94 +423,6 @@ def _admm_ips(S, support, rho=1., tau_inc=2., tau_decr=2., mu=None, tol=1e-6,
             return X, Z, r_, s_, f_vals_
 
 
-def _admm_hgl(S, htree, alpha, rho=1., tau_inc=1.1, tau_decr=1.1, mu=None,
-              tol=1e-6, max_iter=1e2, Xinit=None, alpha_func=None):
-    """
-    returns:
-    -------
-    Z       : numpy.ndarray
-        the split variable with correct support
-
-    r_      : list of floats
-        normalised norm of difference between split variables
-
-    s_      : list of floats
-        convergence of the variable Z in normalised norm
-        normalisation is based on division by the number of elements
-    """
-    # TODO foresee option to give a list of alphas, one for each level
-    # defaults to the constant function
-    if alpha_func is None:
-        alpha_func = lambda alpha, level: alpha
-        # alpha_func = lambda alpha, level: alpha ** (2. - 1. / level)
-
-    p = S.shape[0]
-    Z = (1. + rho) / rho * np.identity(p)
-    U = np.zeros((p, p))
-    if Xinit is None:
-        X = np.identity(p)
-    else:
-        X = Xinit
-    r_ = list()
-    s_ = list()
-    f_vals_ = list()
-    r_.append(linalg.norm(X - Z))
-    s_.append(np.inf)
-    iter_count = 0
-    # this returns an ordered list from leaves to root nodes
-    nodes_levels = htree.root_.get_descendants()
-    nodes_levels.sort(key=lambda x: x[1])
-    nodes_levels.reverse()
-    while True:
-        try:
-            Z_old = Z.copy()
-            # closed form optimization for X
-            eigvals, eigvecs = linalg.eigh(rho * (Z - U) - S)
-            eigvals_ = np.diag(eigvals + (eigvals ** 2 + 4 * rho) ** (1. / 2))
-            X = eigvecs.dot(eigvals_.dot(eigvecs.T)) / (2 * rho)
-            # smooth functional score
-            f_vals_.append(-np.linalg.slogdet(X)[1] + np.sum(X * S))
-            # proximal operator for Z: projection on support
-            Z = U + X
-            # TODO for a given level we could evaluate all in parallel!
-            for (node, level) in nodes_levels:
-                if node.complement() is None:
-                    continue
-                ix = node.evaluate()
-                for node_c in node.complement():
-                    ixc = node_c.evaluate()
-                    B = Z[np.ix_(ix, ixc)]
-                    alpha_ = alpha_func(alpha, level) * np.sqrt(np.size(B))
-                    f_vals_[-1] = f_vals_[-1] + \
-                        alpha_ * np.linalg.norm(X[np.ix_(ix, ixc)])
-                    if np.linalg.norm(B):
-                        # needs np.linalg.norm(B) / np.sqrt(np.size(B)) and not
-                        # np.linalg.norm(B) so as to be independent of size !
-                        multiplier = (1. - alpha_ / (rho * np.linalg.norm(B)))
-                        multiplier = max(0., multiplier)
-                        B *= multiplier
-                        Z[np.ix_(ix, ixc)] = B
-                        Z[np.ix_(ixc, ix)] = B.T
-            # update scaled dual variable
-            U = U + X - Z
-            r_.append(linalg.norm(X - Z) / np.sqrt(p ** 2))
-            s_.append(linalg.norm(Z - Z_old))
-
-            if mu is not None:
-                Y = U * rho  # this is the unscaled Y
-                if r_[-1] > mu * s_[-1]:
-                    rho *= tau_inc
-                elif s_[-1] > mu * r_[-1]:
-                    rho /= tau_decr
-                U = Y / rho  # newly scaled dual variable
-            iter_count += 1
-            if (_check_convergence(X, Z, Z_old, U, rho, tol_abs=tol) or
-                    iter_count > max_iter):
-                raise StopIteration
-        except StopIteration:
-            return X, Z, r_, s_, f_vals_
-
-
 def _admm_hgl2(S, htree, alpha, rho=1., tau_inc=1.1, tau_decr=1.1, mu=None,
                tol=1e-6, max_iter=1e2, Xinit=None, alpha_func=None):
     """
@@ -579,6 +493,8 @@ def _admm_hgl2(S, htree, alpha, rho=1., tau_inc=1.1, tau_decr=1.1, mu=None,
                 # initialise alpha for given level
                 alpha_ = alpha_func(alpha, level)
                 # print "alpha(level = {}) = {}".format(level, alpha_)
+                if alpha_ < machine_eps(0):
+                    continue
                 logger.info("alpha(level = {}) = {}".format(level, alpha_))
                 # get all nodes at specified level
                 L = Labels[..., level - 1]
@@ -587,8 +503,9 @@ def _admm_hgl2(S, htree, alpha, rho=1., tau_inc=1.1, tau_decr=1.1, mu=None,
                                             index=np.unique(L[L > 0])))
                 Xnorms = np.sqrt(label_mean(X ** 2, labels=L,
                                             index=np.unique(L[L > 0])))
+                # might need some 'limit'-behaviour, i.e., eps / eps = 1
                 tmp = rho * norms_ - alpha_
-                multipliers[tmp > 0] = tmp[tmp > 0] / (tmp[tmp > 0] + alpha)
+                multipliers = (tmp > 0) * tmp / (tmp + alpha)
                 multipliers = np.concatenate((np.array([1.]), multipliers))
                 Z = multipliers[L + L.T] * Z
                 func_val += 2 * alpha_ * np.sum(Xnorms)
