@@ -5,11 +5,8 @@ import numpy as np
 import sklearn.utils.extmath
 import copy
 import numbers
-
-
 from scipy.ndimage.measurements import mean as label_mean
-from scipy.special import gamma as gamma_func
-
+import scipy.special
 
 from htree import HTree
 from scipy import linalg
@@ -525,6 +522,9 @@ def _admm_hgl2(S, htree, alpha, rho=1., tau_inc=1.1, tau_decr=1.1, mu=None,
         normalisation is based on division by the number of elements
     """
     # defaults to the constant function
+    if alpha_func is None:
+        # alpha_func = lambda alpha, level: alpha
+        alpha_func = lambda alpha, level: alpha ** (2. - 1. / level)
 
     p = S.shape[0]
     Z = (1. + rho) / rho * np.identity(p)
@@ -542,10 +542,6 @@ def _admm_hgl2(S, htree, alpha, rho=1., tau_inc=1.1, tau_decr=1.1, mu=None,
     max_level = max([lev for (_, lev) in nodes_levels])
     # all leave node values, do not sort (would break data representation)
     node_list = np.array(htree.root_.value_)
-
-    if alpha_func is None:
-        # alpha_func = lambda alpha, level: alpha
-        alpha_func = partial(_alpha_func, h=.5, max_level=max_level)
 
     Labels = np.zeros((p, p, max_level), dtype=np.int)
     for level in np.arange(max_level):
@@ -675,6 +671,7 @@ def cross_val(X, method='gl', alpha_tol=1e-2,
         max_level = max([lev for (_, lev) in tree.root_.get_descendants()])
     elif method == 'ips':
         cov_learner = IPS
+
     if CV_norm is None:
         CV_norm = score_norm
     # alpha_max ?
@@ -711,7 +708,7 @@ def cross_val(X, method='gl', alpha_tol=1e-2,
                     LL[ix] = np.mean(np.array(res_))
                 else:
                     LLh = np.zeros((5,))
-                    hs = np.linspace(0, 1., 5)
+                    hs = np.linspace(1e-3, 1., 5)
                     first_run_h = True
                     while True:
                         try:
@@ -739,11 +736,14 @@ def cross_val(X, method='gl', alpha_tol=1e-2,
                             hs = np.linspace(hs[max_ixh - 1],
                                              hs[max_ixh + 1], 5)
 <<<<<<< HEAD
+<<<<<<< HEAD
                             if hs[4] - hs[0] < .1:
+=======
+                            if hs[4] - hs[0] < .25:
+>>>>>>> parent of 41dabd6... temporary back-up, with bug fix in covariance_learn
                                 raise StopIteration
                         except StopIteration:
-                            LL[ix] = np.min(LLh)
-                            h_opt = hs[np.argmin(LLh)]
+                            LL[ix] = LLh[2]
                             break
 =======
                             if hs[4] - hs[0] < .5:
@@ -761,17 +761,17 @@ def cross_val(X, method='gl', alpha_tol=1e-2,
             alphas = np.linspace(alphas[max_ix - 1], alphas[max_ix + 1], 5)
             if alphas[4] - alphas[0] < alpha_tol:
                 raise StopIteration
-            LL_.append(np.min(LL))
-            alpha_opt = alphas[np.argmin(LL)]
+            LL_.append(LL[2])
         except StopIteration:
             if score_norm == CV_norm:
                 if method != 'hgl' or not optim_h:
-                    return alpha_opt, LL_
+                    return alphas[2], LL_
                 else:
-                    return alpha_opt, LL_, h_opt
+                    return alphas[2], LL_, hs[2]
             else:
+                alpha = alphas[2]
                 if method != 'hgl' or not optim_h:
-                    cov_learner_ = cov_learner(alpha=alpha_opt,
+                    cov_learner_ = cov_learner(alpha=alpha,
                                                score_norm=score_norm,
                                                **kwargs)
                     res_ = Parallel(n_jobs=n_jobs)(
@@ -780,11 +780,12 @@ def cross_val(X, method='gl', alpha_tol=1e-2,
                             ips_flag)
                         for train_ix, test_ix in bs)
                     LL_star = np.mean(np.array(res_))
-                    return alpha_opt, LL_, LL_star
+                    return alpha, LL_, LL_star
                 else:
+                    h = hs[2]
                     cov_learner_ = cov_learner(
-                        alpha=alpha_opt, score_norm=score_norm,
-                        alpha_func=partial(_alpha_func, h=h_opt,
+                        alpha=alpha, score_norm=score_norm,
+                        alpha_func=partial(_alpha_func, h=h,
                                            max_level=max_level),
                         **kwargs)
                     res_ = Parallel(n_jobs=n_jobs)(
@@ -793,7 +794,7 @@ def cross_val(X, method='gl', alpha_tol=1e-2,
                             ips_flag)
                         for train_ix, test_ix in bs)
                     LL_star = np.mean(np.array(res_))
-                    return alpha_opt, LL_, h_opt, LL_star
+                    return alpha, LL_, hs[2], LL_star
         first_run_alpha = False
 
 
@@ -803,8 +804,7 @@ def _eval_cov_learner(X, train_ix, test_ix, model_prec, cov_learner,
     if model_prec is None:
         X_test = X[test_ix, ...]
     else:
-        eigvals, eigvecs = linalg.eigh(model_prec)
-        X_test = np.diag(1. / np.sqrt(eigvals)).dot(eigvecs.T)
+        X_test = model_prec
     cov_learner_ = clone(cov_learner)
     if not ips_flag:
         score = cov_learner_.fit(X_train).score(X_test)
@@ -825,6 +825,7 @@ def _eval_cov_learner(X, train_ix, test_ix, model_prec, cov_learner,
 
 <<<<<<< HEAD
 def _alpha_func(alpha, lev, h=1., max_level=1.):
+<<<<<<< HEAD
     if h > machine_eps(0):
         g1 = gamma_func(max_level - lev + h)
         g2 = gamma_func(max_level - lev + 1)
@@ -842,6 +843,12 @@ def _alpha_func(a, lev, h=1., max_level=1.):
     beta2 = scipy.special.beta(h, 1)
     return a * C * beta1 / beta2
 >>>>>>> parent of 1e370d3... updated the alpha_func definition
+=======
+    C = scipy.special.binom(max_level - 1, max_level - lev)
+    beta1 = scipy.special.beta(max_level - lev + h, lev)
+    beta2 = scipy.special.beta(h, max_level)
+    return alpha * C * beta1 / beta2
+>>>>>>> parent of 41dabd6... temporary back-up, with bug fix in covariance_learn
 
 
 def machine_eps(f):
