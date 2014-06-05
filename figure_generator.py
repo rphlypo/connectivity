@@ -15,6 +15,7 @@ from functools import partial
 from sklearn.utils import check_random_state
 from mpl_toolkits.mplot3d import Axes3D
 from joblib import Parallel, delayed
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 
 def alpha_func_(h, max_level):
@@ -104,7 +105,8 @@ def grid_evaluation(X, Y, n_h=11, n_a=11):
 
 
 def plot_grid(scores=None, score_gl=None, score='KL', transpose=True,
-              zlims=None, z_offset=None, y_offset=None, x_offset=None):
+              zlims=None, z_offset=None, y_offset=None, x_offset=None,
+              print_title=False, invert_x=False, invert_y=False, fsize=18):
     fig = plt.figure()
     if scores is not None and score_gl is not None:
         if score == 'KL':
@@ -135,6 +137,7 @@ def plot_grid(scores=None, score_gl=None, score='KL', transpose=True,
 
     h_vals = np.linspace(0., 1., plot_scores.shape[0])
     alpha_vals = np.logspace(-3., 0., plot_scores.shape[1])
+    X_, Y_ = np.meshgrid(h_vals, alpha_vals)
 
     if transpose:
         plot_scores = plot_scores.T
@@ -143,16 +146,25 @@ def plot_grid(scores=None, score_gl=None, score='KL', transpose=True,
     else:
         ylabel = 'h'
         xlabel = r'$\lambda$'
-    if x_offset is None:
-        x_offset = 0.
-    if y_offset is None:
-        y_offset = 1.
-    if z_offset is None:
-        z_offset = 0.
+
+    if invert_x:
+        plot_scores = plot_scores[::-1, ...]
+        X_ = X_[::-1, ...]
+        Y_ = Y_[::-1, ...]
+    if invert_y:
+        plot_scores = plot_scores[..., ::-1]
+        Y_ = Y_[..., ::-1]
+        X_ = X_[..., ::-1]
+
     ax = fig.gca(projection='3d')
-    X_, Y_ = np.meshgrid(h_vals, alpha_vals)
     ax.plot_surface(X_, Y_, plot_scores, rstride=1, cstride=1,
                     cmap=plt.cm.coolwarm, linewidth=0, antialiased=False)
+    if x_offset is None:
+        x_offset = ax.get_xlim()[1]
+    if y_offset is None:
+        y_offset = ax.get_ylim()[0]
+    if z_offset is None:
+        z_offset = ax.get_zlim()[0]
     ax.contour(X_, Y_, plot_scores, zdir='z', offset=z_offset,
                cmap=plt.cm.coolwarm)
     ax.contour(X_, Y_, plot_scores, zdir='x', offset=x_offset,
@@ -161,10 +173,11 @@ def plot_grid(scores=None, score_gl=None, score='KL', transpose=True,
                cmap=plt.cm.coolwarm)
     if zlims is not None:
         ax.set_zlim(zlims)
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel(ylabel)
-    ax.set_zlabel(title)
-    if scores is not None and score_gl is not None:
+    ax.set_xlabel(xlabel, fontsize=fsize)
+    ax.set_ylabel(ylabel, fontsize=fsize)
+    if print_title:
+        ax.set_zlabel(title, fontsize=fsize)
+    if print_title and scores is not None and score_gl is not None:
         ax.set_title(score_title + '(hgl: lambda={}, h={}) = {}, '.format(
             Y_.flat[np.argmin(scores[score].T)],
             X_.flat[np.argmin(scores[score].T)],
@@ -172,12 +185,12 @@ def plot_grid(scores=None, score_gl=None, score='KL', transpose=True,
             score_title + '(gl: lambda={}) = {}'.format(
                 Y_.flat[np.argmin(score_gl[score].T)],
                 np.min(score_gl[score])))
-    elif scores is not None:
+    elif print_title and scores is not None:
         ax.set_title(score_title + '(hgl: lambda={}, h={}) = {}'.format(
             Y_.flat[np.argmin(scores[score].T)],
             X_.flat[np.argmin(scores[score].T)],
             np.min(scores[score])))
-    elif score_gl is not None:
+    elif print_title and score_gl is not None:
             ax.set_title(score_title + '(gl: lambda={}) = {}'.format(
                          Y_.flat[np.argmin(score_gl[score].T)],
                          np.min(score_gl[score])))
@@ -218,6 +231,31 @@ def plot_covariances(X, Theta, Y=None):
     plt.show()
 
 
+def plot_covariance(cov, scaled=True, aux=None):
+    if scaled:
+        from covariance_learn import _cov_2_corr as cov2corr
+        cov = cov2corr(cov)
+    plt.figure()
+    ax = plt.gca()
+    if aux is None:
+        aux = np.ones(cov.shape)
+    im = plt.matshow(np.ma.masked_equal(aux, 0) * cov, cmap=plt.cm.RdBu_r,
+                     fignum=False)
+    ax.set_axis_bgcolor('.4')
+    divider = make_axes_locatable(ax)
+    for k in np.arange(4):
+        plt.plot([-.5, 15.5], [4 * k - .5, 4 * k - .5],
+                 linewidth=2, color='black')
+        plt.plot([4 * k - .5, 4 * k - .5], [-.5, 15.5],
+                 linewidth=2, color='black')
+    plt.xlim((-.5, 15.5))
+    plt.ylim((15.5, -.5))
+    m = np.max(np.abs(cov))
+    plt.clim((-m, m))
+    cax = divider.append_axes('right', size='5%', pad=.05)
+    plt.colorbar(im, cax=cax)
+
+
 def plot_profiles(alpha=1., h=.8, max_level=4, levels=None):
     if levels is None:
         levels = np.arange(1, max_level + 1)
@@ -243,26 +281,32 @@ def lambda_path(n_samples, C, tree):
     return alpha_opt_, h_opt_
 
 
-if __name__ == "__main__":
+def init(random_state=None, a=-.4, b=.28, n_samples=16):
+    if random_state is None:
+        random_state = np.random.randint(2 ** 31 - 1)
+    random_state = check_random_state(random_state)
+
     tree = htree.construct_tree(arity=4, depth=2)
-    max_level = max([lev for (_, lev) in tree.root_.get_descendants()])
 
     # Create sample
-    a = -.4
-    b = .28
     Theta = phase_transition._get_mx(a, b, mx_type='smith')
-
-    n_samples = 32
-    ii = np.random.randint(2 ** 31 - 1)
-    print "random state: {}".format(ii)
-    random_state = check_random_state(ii)  # 220013245
     X = random_state.normal(size=(n_samples, Theta.shape[0]))
+
+    return tree, X, Theta
+
+
+def get_max_level(tree):
+    return max([lev for (_, lev) in tree.root_.get_descendants()])
+
+
+if __name__ == "__main__":
+    tree, X, Theta = init()
+    max_level = get_max_level(tree)
 
     eigvals, eigvecs = scipy.linalg.eigh(Theta)
     C = np.diag(1 / np.sqrt(eigvals)).dot(eigvecs.T)
 
     X = X.dot(C)
-
     Y = C
 
     hgl = covariance_learn.HierarchicalGraphLasso(
