@@ -309,21 +309,13 @@ if __name__ == "__main__":
     X = X.dot(C)
     Y = C
 
-    hgl = covariance_learn.HierarchicalGraphLasso(
-        alpha=.25, htree=tree, alpha_func=alpha_func_(h=.1, max_level=2.),
-        rho=2., score_norm='KL')
-    print "hgl: {}".format(hgl.fit(X).score(X))
-
-    gl = covariance_learn.GraphLasso(alpha=.25, rho=2., score_norm='KL')
-    print " gl: {}".format(gl.fit(X).score(X))
-    plt.figure()
-    plt.plot(hgl.f_vals_)
-    plt.plot(gl.f_vals_)
-    raise StopIteration
-    plot_covariances(X, Theta, Y)
-
     scores, score_gl, alpha_star, h_star = grid_evaluation(
         X, Y, n_a=21, n_h=21)
+
+    n_samples = np.logspace(1., 3., 9)
+    alpha_opt_, h_opt_ = lambda_path(n_samples, C, tree)
+    raise StopIteration
+    plot_covariances(X, Theta, Y)
 
     estimate_precision(alpha=alpha_star['hgl']['KL'], h=h_star['hgl']['KL'],
                        method='hgl',
@@ -341,6 +333,3 @@ if __name__ == "__main__":
 
     plot_grid(scores=scores, score='ell0', transpose=True)
     plot_grid(scores=scores, score_gl=score_gl, score='ell0', transpose=True)
-
-    n_samples = np.logspace(1., 3., 9)
-    # alpha_opt_, h_opt_ = lambda_path(n_samples, C, tree)
