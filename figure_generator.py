@@ -288,4 +288,4 @@ if __name__ == "__main__":
     plot_grid(scores=scores, score_gl=score_gl, score='ell0', transpose=True)
 
     n_samples = np.logspace(1., 3., 9)
-    # alpha_opt_, h_opt_ = lambda_path(n_samples, C, tree)
+    alpha_opt_, h_opt_ = lambda_path(n_samples, C, tree)
