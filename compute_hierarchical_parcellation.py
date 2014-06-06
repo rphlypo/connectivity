@@ -151,11 +151,12 @@ def do_k_means(data, n_clusters):
     return k_means.labels_
 
 
-def compute_optimal_params(subject_dir, method='hgl', **kwargs):
+def compute_optimal_params(subject_dir, method='hgl', sess_ix=None, **kwargs):
     get_data_ = mem.cache(get_data)
     subj_data = get_data_(subject_dir)
     # random session for training
-    sess_ix = np.random.randint(2) + 1
+    if sess_ix is None:
+        sess_ix = np.random.randint(2) + 1
     X = np.concatenate([d["data"] for d in subj_data
                         if d["session"] == sess_ix], axis=0)
     # complementary session
@@ -172,12 +173,14 @@ def compute_optimal_params(subject_dir, method='hgl', **kwargs):
 def compare_hgl_gl(subject_dir=subject_dirs):
     results = {'hgl': {'score': [], 'alpha': [], 'h': []},
                'gl': {'score': [], 'alpha': []}}
+    sess_ix = np.random.randint(2) + 1
     comp_opt_params = mem.cache(compute_optimal_params)
     if not hasattr(subject_dir, '__iter__'):
         subject_dir = [subject_dir]
 #   res1 = Parallel(n_jobs=6)(delayed(comp_opt_params)(
 #       sd, method='hgl', htree=TREE) for sd in subject_dir)
-    res1 = comp_opt_params(subject_dir[0], method='hgl', htree=TREE,
+    res1 = comp_opt_params(subject_dir[0], method='hgl', sess_ix=sess_ix,
+                           htree=TREE,
                            base_estimator=LedoitWolf(assume_centered=True))
     res = zip(*res1)
     results['hgl']['score'] = [r[-1] for r in res[1]]
@@ -185,7 +188,8 @@ def compare_hgl_gl(subject_dir=subject_dirs):
     results['hgl']['h'] = res[2]
 #   res2 = Parallel(n_jobs=6)(delayed(comp_opt_params)(
 #       sd, method='gl') for sd in subject_dir)
-    res2 = comp_opt_params(subject_dir[0], method='gl')
+    res2 = comp_opt_params(subject_dir[0], method='gl', sess_ix=sess_ix,
+                           base_estimator=LedoitWolf(assume_centered=True))
     res = zip(*res2)
     results['gl']['score'] = [r[-1] for r in res[1]]
     results['gl']['alpha'] = res[0]
