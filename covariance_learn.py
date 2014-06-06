@@ -747,6 +747,31 @@ def _alpha_func(alpha, lev, h=1., max_level=1.):
         return alpha * np.float(lev == max_level)
 
 
+def ric(mx, mask=None):
+    """ Ravikumar Irrepresentability Condition for a correlation mx
+
+    arguments:
+    ---------
+        mx  : the matrix on which the ric is to be computed
+
+        mask: if mx does not contain exact zeros, use this matrix as a binary
+            mask for edge indication (non-zero only where edges are present,
+            self-loops must be included)
+
+    returns:
+    -------
+        the irrepresentability condition
+    """
+    Gamma = np.kron(mx, mx)
+    if mask is None:
+        mask = mx
+    edge_set = np.where(np.triu(mask != 0).flat[:])[0]
+    non_edge_set = np.where(np.triu(mask == 0).flat[:])[0]
+    G_ScS = Gamma[np.ix_(non_edge_set, edge_set)]
+    G_SS = Gamma[np.ix_(edge_set, edge_set)]
+    return np.max(np.sum(np.abs(G_ScS.dot(G_SS)), axis=1))
+
+
 def machine_eps(f):
     import itertools
     return next(2 ** -i for i in itertools.count() if f + 2 ** -(i + 1) == f)
