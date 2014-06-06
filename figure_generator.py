@@ -7,6 +7,7 @@ import covariance_learn
 import itertools
 import phase_transition
 import htree
+import joblib
 import matplotlib.pyplot as plt
 import numpy as np
 import scipy.linalg
@@ -237,9 +238,6 @@ def lambda_path(n_samples, C, tree):
             model_prec=Theta, optim_h=True, htree=tree)
         for n in n_samples)
     alpha_opt_, LL_, h_opt_ = zip(*results)
-    plt.figure
-    plt.plot(n_samples, alpha_opt_)
-    plt.show()
     return alpha_opt_, h_opt_
 
 
@@ -252,8 +250,9 @@ if __name__ == "__main__":
     b = .28
     Theta = phase_transition._get_mx(a, b, mx_type='smith')
 
-    n_samples = 32
-    ii = np.random.randint(2 ** 31 - 1)
+    n_samples = 16
+    # ii = np.random.randint(2 ** 31 - 1)
+    ii = 1220504103
     print "random state: {}".format(ii)
     random_state = check_random_state(ii)  # 220013245
     X = random_state.normal(size=(n_samples, Theta.shape[0]))
@@ -265,21 +264,25 @@ if __name__ == "__main__":
 
     Y = C
 
-    hgl = covariance_learn.HierarchicalGraphLasso(
-        alpha=.25, htree=tree, alpha_func=alpha_func_(h=.1, max_level=2.),
-        rho=2., score_norm='KL')
-    print "hgl: {}".format(hgl.fit(X).score(X))
-
-    gl = covariance_learn.GraphLasso(alpha=.25, rho=2., score_norm='KL')
-    print " gl: {}".format(gl.fit(X).score(X))
-    plt.figure()
-    plt.plot(hgl.f_vals_)
-    plt.plot(gl.f_vals_)
-    raise StopIteration
-    plot_covariances(X, Theta, Y)
-
     scores, score_gl, alpha_star, h_star = grid_evaluation(
         X, Y, n_a=21, n_h=21)
+
+    n_samples = np.logspace(1., 3., 9)
+    alpha_opt_, h_opt_ = lambda_path(n_samples, C, tree)
+
+    joblib.dump({'scores': scores,
+                 'score_gl': score_gl,
+                 'alpha_star': alpha_star,
+                 'h_star': h_star,
+                 'n_samples': n_samples,
+                 'ii': ii,
+                 'alpha_opt_': alpha_opt_,
+                 'h_opt_': h_opt_},
+                'results_final_p16.pkl')
+
+    raise StopIteration('breaking from the main procedure')
+
+    plot_covariances(X, Theta, Y)
 
     estimate_precision(alpha=alpha_star['hgl']['KL'], h=h_star['hgl']['KL'],
                        method='hgl',
@@ -298,5 +301,6 @@ if __name__ == "__main__":
     plot_grid(scores=scores, score='ell0', transpose=True)
     plot_grid(scores=scores, score_gl=score_gl, score='ell0', transpose=True)
 
-    n_samples = np.logspace(1., 3., 9)
-    alpha_opt_, h_opt_ = lambda_path(n_samples, C, tree)
+    plt.figure()
+    plt.plot(n_samples, alpha_opt_)
+    plt.show()

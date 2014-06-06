@@ -504,8 +504,11 @@ def _admm_hgl2(S, htree, alpha, rho=1., tau_inc=1.1, tau_decr=1.1, mu=None,
                 Xnorms = np.sqrt(label_mean(X ** 2, labels=L,
                                             index=np.unique(L[L > 0])))
                 # might need some 'limit'-behaviour, i.e., eps / eps = 1
-                tmp = rho * norms_ - alpha_
-                multipliers = (tmp > 0) * tmp / (tmp + alpha)
+                # tmp = rho * norms_ - alpha_
+                # multipliers[tmp > 0] = tmp[tmp > 0] / (tmp[tmp > 0] + alpha)
+                multipliers[norms_ > 0] = \
+                    1 - alpha_ / (rho * norms_[norms_ > 0])
+                multipliers = (multipliers > 0) * multipliers
                 multipliers = np.concatenate((np.array([1.]), multipliers))
                 Z = multipliers[L + L.T] * Z
                 func_val += 2 * alpha_ * np.sum(Xnorms)
