@@ -232,29 +232,44 @@ def plot_covariances(X, Theta, Y=None):
     plt.show()
 
 
-def plot_covariance(cov, scaled=True, aux=None):
+def plot_covariance(cov, scaled=True, aux=None, diag=True, grid=True):
+    cov_ = cov.copy()
     if scaled:
         from covariance_learn import _cov_2_corr as cov2corr
-        cov = cov2corr(cov)
+        cov_ = cov2corr(cov_)
+    if not diag:
+        cov_.flat[::cov_.shape[0] + 1] = 0.
     plt.figure()
     ax = plt.gca()
     if aux is None:
-        aux = np.ones(cov.shape)
-    im = plt.matshow(np.ma.masked_equal(aux, 0) * cov, cmap=plt.cm.RdBu_r,
+        aux = np.ones(cov_.shape)
+    im = plt.matshow(np.ma.masked_equal(aux, 0) * cov_, cmap=plt.cm.RdBu_r,
                      fignum=False)
     ax.set_axis_bgcolor('.4')
+    ax.set_xticklabels([])
+    ax.set_yticklabels([])
     divider = make_axes_locatable(ax)
-    for k in np.arange(4):
-        plt.plot([-.5, 15.5], [4 * k - .5, 4 * k - .5],
-                 linewidth=2, color='black')
-        plt.plot([4 * k - .5, 4 * k - .5], [-.5, 15.5],
-                 linewidth=2, color='black')
-    plt.xlim((-.5, 15.5))
-    plt.ylim((15.5, -.5))
-    m = np.max(np.abs(cov))
+    if cov_.shape[0] == 16 and grid:
+        for k in np.arange(4 - 1):
+            plt.plot([-.5, 15.5], [4 * (k + 1) - .5, 4 * (k + 1) - .5],
+                     linewidth=2, color='black')
+            plt.plot([4 * (k + 1) - .5, 4 * (k + 1) - .5], [-.5, 15.5],
+                     linewidth=2, color='black')
+        plt.xlim((-.5, 15.5))
+        plt.ylim((15.5, -.5))
+    elif cov_.shape[0] == 512 and grid:
+        for k in np.arange(64 - 1):
+            plt.plot([-.5, 512.5], [8 * (k + 1) - .5, 8 * (k + 1) - .5],
+                     linewidth=1 + int(not((k + 1) % 8)), color='black')
+            plt.plot([8 * (k + 1) - .5, 8 * (k + 1) - .5], [-.5, 512.5],
+                     linewidth=1 + int(not((k + 1) % 8)), color='black')
+        plt.xlim((-.5, 512.5))
+        plt.ylim((512.5, -.5))
+    m = np.max(np.abs(cov_))
     plt.clim((-m, m))
     cax = divider.append_axes('right', size='5%', pad=.05)
-    plt.colorbar(im, cax=cax)
+    cb = plt.colorbar(im, cax=cax)
+    cb.ax.tick_params(labelsize=18)
 
 
 def plot_profiles(alpha=1., h=.8, max_level=4, levels=None):
@@ -312,16 +327,16 @@ if __name__ == "__main__":
 
     n_samples = np.logspace(1., 3., 9)
     alpha_opt_, h_opt_ = lambda_path(n_samples, C, tree)
-    
-	joblib.dump({'scores': scores,
-				 'score_gl': score_gl,
-				 'alpha_star': alpha_star,
-				 'h_star': h_star,
-				 'n_samples': n_samples,
-				 'alpha_opt_': alpha_opt_,
-				 'h_opt_': h_opt_},
-				'results_.pkl')
-	raise StopIteration
+
+    joblib.dump({'scores': scores,
+                 'score_gl': score_gl,
+                 'alpha_star': alpha_star,
+                 'h_star': h_star,
+                 'n_samples': n_samples,
+                 'alpha_opt_': alpha_opt_,
+                 'h_opt_': h_opt_},
+                'results_.pkl')
+    raise StopIteration
     plot_covariances(X, Theta, Y)
 
     estimate_precision(alpha=alpha_star['hgl']['KL'], h=h_star['hgl']['KL'],
