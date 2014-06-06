@@ -7,6 +7,7 @@ import covariance_learn
 import itertools
 import phase_transition
 import htree
+import joblib
 import matplotlib.pyplot as plt
 import numpy as np
 import scipy.linalg
@@ -275,9 +276,6 @@ def lambda_path(n_samples, C, tree):
             model_prec=Theta, optim_h=True, htree=tree)
         for n in n_samples)
     alpha_opt_, LL_, h_opt_ = zip(*results)
-    plt.figure
-    plt.plot(n_samples, alpha_opt_)
-    plt.show()
     return alpha_opt_, h_opt_
 
 
@@ -314,7 +312,16 @@ if __name__ == "__main__":
 
     n_samples = np.logspace(1., 3., 9)
     alpha_opt_, h_opt_ = lambda_path(n_samples, C, tree)
-    raise StopIteration
+    
+	joblib.dump({'scores': scores,
+				 'score_gl': score_gl,
+				 'alpha_star': alpha_star,
+				 'h_star': h_star,
+				 'n_samples': n_samples,
+				 'alpha_opt_': alpha_opt_,
+				 'h_opt_': h_opt_},
+				'results_.pkl')
+	raise StopIteration
     plot_covariances(X, Theta, Y)
 
     estimate_precision(alpha=alpha_star['hgl']['KL'], h=h_star['hgl']['KL'],
