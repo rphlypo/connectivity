@@ -752,9 +752,9 @@ def ric(mx, mask=None):
 
     arguments:
     ---------
-        mx  : the matrix on which the ric is to be computed
+        mx  : the matrix on which the ric is to be computed (precision matrix)
 
-        mask: if mx does not contain exact zeros, use this matrix as a binary
+        mask: if mx does not contain exact zeros, use this matrix as a logical
             mask for edge indication (non-zero only where edges are present,
             self-loops must be included)
 
@@ -762,11 +762,12 @@ def ric(mx, mask=None):
     -------
         the irrepresentability condition
     """
-    Gamma = np.kron(mx, mx)
     if mask is None:
-        mask = mx
-    edge_set = np.where(np.triu(mask != 0).flat[:])[0]
-    non_edge_set = np.where(np.triu(mask == 0).flat[:])[0]
+        mask = np.abs(mx) > machine_eps(0.)
+    mx = linalg.inv(mx)
+    Gamma = np.kron(mx, mx)
+    edge_set = np.where(np.triu(mask).flat[:])[0]
+    non_edge_set = np.where(np.triu(np.logical_not(mask)).flat[:])[0]
     G_ScS = Gamma[np.ix_(non_edge_set, edge_set)]
     G_SS = Gamma[np.ix_(edge_set, edge_set)]
     return np.max(np.sum(np.abs(G_ScS.dot(G_SS)), axis=1))
