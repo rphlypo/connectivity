@@ -171,8 +171,9 @@ def compute_optimal_params(subject_dir, method='hgl', sess_ix=None, **kwargs):
 
 
 def compare_hgl_gl(subject_dir=subject_dirs):
-    results = {'hgl': {'score': [], 'alpha': [], 'h': []},
-               'gl': {'score': [], 'alpha': []}}
+    results_ = {'hgl': {'score': [], 'alpha': [], 'h': []},
+                'gl': {'score': [], 'alpha': []}}
+    results = {'LW': results_, 'empcov': results_}
     sess_ix = np.random.randint(2) + 1
     comp_opt_params = mem.cache(compute_optimal_params)
     if not hasattr(subject_dir, '__iter__'):
@@ -180,19 +181,35 @@ def compare_hgl_gl(subject_dir=subject_dirs):
 #   res1 = Parallel(n_jobs=6)(delayed(comp_opt_params)(
 #       sd, method='hgl', htree=TREE) for sd in subject_dir)
     res1 = comp_opt_params(subject_dir[0], method='hgl', sess_ix=sess_ix,
+                           htree=TREE)
+    res = zip(*res1)
+    results['emp_cov']['hgl']['score'] = [r[-1] for r in res[1]]
+    results['emp_cov']['hgl']['alpha'] = res[0]
+    results['emp_cov']['hgl']['h'] = res[2]
+    res1 = comp_opt_params(subject_dir[0], method='hgl', sess_ix=sess_ix,
                            htree=TREE,
                            base_estimator=LedoitWolf(assume_centered=True))
     res = zip(*res1)
-    results['hgl']['score'] = [r[-1] for r in res[1]]
-    results['hgl']['alpha'] = res[0]
-    results['hgl']['h'] = res[2]
+    results['LW']['hgl']['score'] = [r[-1] for r in res[1]]
+    results['LW']['hgl']['alpha'] = res[0]
+    results['LW']['hgl']['h'] = res[2]
 #   res2 = Parallel(n_jobs=6)(delayed(comp_opt_params)(
 #       sd, method='gl') for sd in subject_dir)
+    res2 = comp_opt_params(subject_dir[0], method='gl', sess_ix=sess_ix)
+    res = zip(*res2)
+    results['emp_cov']['gl']['score'] = [r[-1] for r in res[1]]
+    results['emp_cov']['gl']['alpha'] = res[0]
     res2 = comp_opt_params(subject_dir[0], method='gl', sess_ix=sess_ix,
                            base_estimator=LedoitWolf(assume_centered=True))
     res = zip(*res2)
-    results['gl']['score'] = [r[-1] for r in res[1]]
-    results['gl']['alpha'] = res[0]
+    results['LW']['gl']['score'] = [r[-1] for r in res[1]]
+    results['LW']['gl']['alpha'] = res[0]
+    return results
+
+
+def run_analysis(subject_dirs=subject_dirs):
+    results = Parallel(n_jobs=5)(delayed(compare_hgl_gl)(sd)
+                                 for sd in subject_dirs)
     return results
 
 
