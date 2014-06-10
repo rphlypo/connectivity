@@ -28,7 +28,7 @@ from nilearn import signal
 
 import htree
 
-if getuser() == 'rphlypo':
+if getuser() == 'rphlypo' and socket.gethostname() != 'drago':
     ROOT_DIR = '/volatile'
 else:
     ROOT_DIR = '/storage'
@@ -114,7 +114,9 @@ def get_data(subject_dir, labels_img='labels_level_3.nii.gz',
 
 ###############################################################################
 if getuser() == 'rphlypo' and socket.gethostname() == 'is151225':
-    mem = Memory(cachedir='/volatile/workspace/tmp/connectivity_joblib')
+    mem = Memory(cachedir='/volatile/workspace/tmp/connectivity_joblib')    
+elif socket.gethostname() == 'drago' and getuser() == 'rphlypo':
+    mem = Memory(cachedir='/storage/workspace/rphlypo/hierarchical/joblib')
 else:
     mem = Memory(cachedir='/storage/workspace/tmp/gael_joblib')
 
