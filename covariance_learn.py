@@ -177,6 +177,12 @@ class GraphLasso(EmpiricalCovariance):
         elif norm == "ell0":
             # X_test acts as a mask
             error_norm = self._support_recovery_norm(X_test)
+        elif norm == "bregman":
+            test_mx = test_cov.dot(self.precision_)
+            # negative log-det bregman divergence
+            error_norm = - np.linalg.slogdet(test_mx)
+            error_norm += np.sum(test_mx) - test_mx.shape[0]
+            error_norm /= 2.
         else:
             raise NotImplementedError(
                 "Only the following norms are implemented:\n"
