@@ -1,6 +1,6 @@
 import logging
 reload(logging)
-import sys
+# import sys
 import numpy as np
 import sklearn.utils.extmath
 import copy
@@ -17,8 +17,10 @@ from sklearn.base import clone
 from sklearn.covariance.empirical_covariance_ import EmpiricalCovariance
 from functools import partial
 
+
 logger = logging.getLogger(__name__)
-logger.addHandler(logging.StreamHandler(sys.stderr))
+console = logging.StreamHandler()
+# logger.addHandler(logging.StreamHandler(sys.stderr))
 fast_logdet = sklearn.utils.extmath.fast_logdet
 
 
@@ -137,8 +139,8 @@ class GraphLasso(EmpiricalCovariance):
             - 'geodesic':
                 sum(log(eigenvalues(model_precision.dot(test_covariance))))
             - 'invFro': sqrt(trace(B.T.dot(B)))
-            - 'KL':
-                (-log(det(test_covariance)) - log(det(model_precision))) / 2
+            - 'KL': actually Jensen's divergence (symmetrised KL)
+            - 'bregman': (-log(det(Theta.dot(S))) + trace(Theta.dot(S)) - p)/2
             where A is the error ``(test_covariance - model_covariance)``
             and   B is the error ``(test_precision - model_precision)``
         Returns
@@ -168,7 +170,7 @@ class GraphLasso(EmpiricalCovariance):
         elif norm == "KL":
             # test_cov is the target model
             # self.precision_ is the trained data model
-            # KL is symmetrised
+            # KL is symmetrised (Jeffreys divergence)
             error_norm = -self.precision_.shape[0]
             error_norm += np.trace(linalg.inv(
                 test_cov.dot(self.precision_))) / 2.
@@ -180,7 +182,7 @@ class GraphLasso(EmpiricalCovariance):
         elif norm == "bregman":
             test_mx = test_cov.dot(self.precision_)
             # negative log-det bregman divergence
-            error_norm = - np.linalg.slogdet(test_mx)
+            error_norm = - np.linalg.slogdet(test_mx)[1]
             error_norm += np.sum(test_mx) - test_mx.shape[0]
             error_norm /= 2.
         else:
