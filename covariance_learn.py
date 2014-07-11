@@ -329,7 +329,6 @@ def _admm_gl(S, alpha, rho=1., tau_inc=2., tau_decr=2., mu=None, tol=1e-6,
     s_ = list()
     f_vals_ = list()
     iter_count = 0
-    tk = 1
     while True:
         try:
             Z_old = Z.copy()
@@ -342,13 +341,6 @@ def _admm_gl(S, alpha, rho=1., tau_inc=2., tau_decr=2., mu=None, tol=1e-6,
             # proximal operator for Z: soft thresholding
             tmp = np.abs(X + U) - alpha / rho
             Z = np.sign(X + U) * tmp * (tmp > 0)
-            tkp1 = (1 + np.sqrt(1 + 4 * tk ** 2)) / 2.
-            Z = Z + (tk - 1) / tkp1 * (Z - Z_old)
-            tk = tkp1
-#           Z = np.sign(X + U) * np.max(
-#               np.reshape(np.concatenate((np.abs(X + U) - alpha / rho,
-#                                          np.zeros((p, p))), axis=1),
-#                          (p, p, -1), order="F"), axis=2)
             func_val += np.sum(alpha * np.abs(X))
             # update scaled dual variable
             U = U + X - Z
