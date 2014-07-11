@@ -329,6 +329,7 @@ def _admm_gl(S, alpha, rho=1., tau_inc=2., tau_decr=2., mu=None, tol=1e-6,
     s_ = list()
     f_vals_ = list()
     iter_count = 0
+    tk = 1
     while True:
         try:
             Z_old = Z.copy()
@@ -341,6 +342,9 @@ def _admm_gl(S, alpha, rho=1., tau_inc=2., tau_decr=2., mu=None, tol=1e-6,
             # proximal operator for Z: soft thresholding
             tmp = np.abs(X + U) - alpha / rho
             Z = np.sign(X + U) * tmp * (tmp > 0)
+            tkp1 = (1 + np.sqrt(1 + 4 * tk ** 2)) / 2.
+            Z = Z + (tk - 1) / tkp1 * (Z - Z_old)
+            tk = tkp1
 #           Z = np.sign(X + U) * np.max(
 #               np.reshape(np.concatenate((np.abs(X + U) - alpha / rho,
 #                                          np.zeros((p, p))), axis=1),
@@ -352,19 +356,57 @@ def _admm_gl(S, alpha, rho=1., tau_inc=2., tau_decr=2., mu=None, tol=1e-6,
             s_.append(linalg.norm(Z - Z_old) / (p ** 2))
             f_vals_.append(func_val)
 
-            if mu is not None:
-                Y = U * rho  # this is the unscaled Y
-                if r_[-1] > mu * s_[-1]:
-                    rho *= tau_inc
-                elif s_[-1] > mu * r_[-1]:
-                    rho /= tau_decr
-                U = Y / rho  # newly scaled dual variable
+            rho = _update_rho(rho, U, r_, s_, mu, tau_inc, tau_decr)
             iter_count += 1
             if (_check_convergence(X, Z, Z_old, U, rho, tol_abs=tol) or
                     iter_count > max_iter):
                 raise StopIteration
         except StopIteration:
             return X, Z, r_, s_, f_vals_
+
+
+def _update_rho(rho, U, r_, s_, mu=10., tau_inc=2, tau_decr=2):
+    """ updates the dual scaled variable and rho if necessary
+
+    arguments
+    ---------
+    rho : positive float
+        actual value of rho
+
+    U : np.ndarray of dim (n_features, n_features)
+        the scaled dual variable
+
+    mu : positive float
+        the allowed gap between the primal and dual residual norms
+
+    r_ : list of positive floats
+        the primal residual norms
+
+    s_ : list of positive floats
+        the dual residual norms
+
+    tau_incr : float > 1
+        multiplier of rho in case r > mu * s
+
+    tau_decr : float > 1
+        divider of rho in case s > mu * r
+
+    returns
+    -------
+    rho : unsigned float
+        updated rho-value
+
+    U is updated inplace and hence need not be returned
+    """
+    if mu is None:
+        return rho
+    if r_[-1] > mu * s_[-1]:
+        rho *= tau_inc
+        U /= tau_inc  # newly scaled dual variable, update inplace
+    elif s_[-1] > mu * r_[-1]:
+        rho /= tau_decr
+        U *= tau_decr  # newly scaled dual variable, update inplace
+    return rho
 
 
 def _admm_ips(S, support, rho=1., tau_inc=2., tau_decr=2., mu=None, tol=1e-6,
@@ -416,13 +458,7 @@ def _admm_ips(S, support, rho=1., tau_inc=2., tau_decr=2., mu=None, tol=1e-6,
                 np.sum(S * X * support)
             f_vals_.append(func_val)
 
-            if mu is not None:
-                Y = U * rho  # this is the unscaled Y
-                if r_[-1] > mu * s_[-1]:
-                    rho *= tau_inc
-                elif s_[-1] > mu * r_[-1]:
-                    rho /= tau_decr
-                U = Y / rho  # newly scaled dual variable
+            rho = _update_rho(rho, U, r_, s_, mu, tau_inc, tau_decr)
             iter_count += 1
             if (_check_convergence(X, Z, Z_old, U, rho, tol_abs=tol) or
                     iter_count > max_iter):
@@ -526,13 +562,7 @@ def _admm_hgl2(S, htree, alpha, rho=1., tau_inc=1.1, tau_decr=1.1, mu=None,
             r_.append(linalg.norm(X - Z) / np.sqrt(p ** 2))
             s_.append(linalg.norm(Z - Z_old) / np.sqrt(p ** 2))
 
-            if mu is not None:
-                U *= rho  # this is the unscaled Y
-                if r_[-1] > mu * s_[-1]:
-                    rho *= tau_inc
-                elif s_[-1] > mu * r_[-1]:
-                    rho /= tau_decr
-                U /= rho  # newly scaled dual variable
+            rho = _update_rho(rho, U, r_, s_, mu, tau_inc, tau_decr)
             iter_count += 1
             if (_check_convergence(X, Z, Z_old, U, rho, tol_abs=tol) or
                     iter_count > max_iter):
