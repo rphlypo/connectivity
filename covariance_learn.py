@@ -524,7 +524,7 @@ def _admm_hgl2(S, htree, alpha, rho=1., tau_inc=1.1, tau_decr=1.1, mu=None,
             # update scaled dual variable
             U = U + X - Z
             r_.append(linalg.norm(X - Z) / np.sqrt(p ** 2))
-            s_.append(linalg.norm(Z - Z_old))
+            s_.append(linalg.norm(Z - Z_old) / np.sqrt(p ** 2))
 
             if mu is not None:
                 U *= rho  # this is the unscaled Y
