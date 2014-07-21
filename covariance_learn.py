@@ -71,7 +71,7 @@ class GraphLasso(EmpiricalCovariance):
         S = self._X_to_cov(X)
         precision_, split_precision_, var_gap_, dual_gap_, f_vals_ =\
             _admm_gl(S, self.alpha, rho=self.rho, tol=self.tol,
-                     max_iter=self.max_iter)
+                     max_iter=self.max_iter, mu=self.mu, **kwargs)
 
         self.precision_ = precision_
         self.auxiliary_prec_ = split_precision_
@@ -219,7 +219,7 @@ class IPS(GraphLasso):
         S = self._X_to_cov(X)
         precision_, split_precision_, var_gap_, dual_gap_, f_vals_ =\
             _admm_ips(S, self.support, rho=self.rho, tol=self.tol,
-                      max_iter=self.max_iter)
+                      max_iter=self.max_iter, **kwargs)
 
         self.precision_ = precision_
         self.auxiliary_prec_ = split_precision_
@@ -280,7 +280,7 @@ class HierarchicalGraphLasso(GraphLasso):
         precision_, split_precision_, var_gap_, dual_gap_, f_vals_ =\
             _admm_hgl2(S, self.htree_, self.alpha, rho=self.rho, tol=self.tol,
                        mu=self.mu, max_iter=self.max_iter,
-                       alpha_func=self.alpha_func)
+                       alpha_func=self.alpha_func, **kwargs)
 
         self.precision_ = precision_
         self.auxiliary_prec_ = split_precision_
@@ -315,14 +315,20 @@ class HierarchicalGraphLasso(GraphLasso):
 
 
 def _admm_gl(S, alpha, rho=1., tau_inc=2., tau_decr=2., mu=None, tol=1e-6,
-             max_iter=100, Xinit=None):
+             max_iter=100, Xinit=None, Zinit=None, Uinit=None):
     p = S.shape[0]
-    Z = (1. + rho) / rho * np.identity(p)
-    U = np.zeros((p, p))
     if Xinit is None:
         X = np.identity(p)
     else:
         X = Xinit
+    if Zinit is None:
+        Z = (1. + rho) / rho * np.identity(p)
+    else:
+        Z = Zinit
+    if Uinit is None:
+        U = Z - X
+    else:
+        U = Uinit
     if isinstance(alpha, numbers.Number):
         alpha = alpha * (np.ones((p, p)) - np.identity(p))
     r_ = list()
@@ -338,6 +344,7 @@ def _admm_gl(S, alpha, rho=1., tau_inc=2., tau_decr=2., mu=None, tol=1e-6,
             eigvals = (eigvals + (eigvals ** 2 + rho) ** (1. / 2)) / rho
             X = eigvecs.dot(np.diag(eigvals).dot(eigvecs.T))
             func_val = -np.sum(np.log(eigvals)) + np.sum(S * X)
+            func_val += np.sum(alpha * np.abs(X))
             # proximal operator for Z: soft thresholding
             tmp = np.abs(X + U) - alpha / rho
             Z = np.sign(X + U) * tmp * (tmp > 0)
@@ -345,20 +352,13 @@ def _admm_gl(S, alpha, rho=1., tau_inc=2., tau_decr=2., mu=None, tol=1e-6,
 #               np.reshape(np.concatenate((np.abs(X + U) - alpha / rho,
 #                                          np.zeros((p, p))), axis=1),
 #                          (p, p, -1), order="F"), axis=2)
-            func_val += np.sum(alpha * np.abs(X))
             # update scaled dual variable
             U = U + X - Z
             r_.append(linalg.norm(X - Z) / (p ** 2))
             s_.append(linalg.norm(Z - Z_old) / (p ** 2))
             f_vals_.append(func_val)
 
-            if mu is not None:
-                Y = U * rho  # this is the unscaled Y
-                if r_[-1] > mu * s_[-1]:
-                    rho *= tau_inc
-                elif s_[-1] > mu * r_[-1]:
-                    rho /= tau_decr
-                U = Y / rho  # newly scaled dual variable
+            rho = _update_rho(U, rho, r_[-1], s_[-1], mu, tau_inc, tau_decr)
             iter_count += 1
             if (_check_convergence(X, Z, Z_old, U, rho, tol_abs=tol) or
                     iter_count > max_iter):
@@ -416,13 +416,7 @@ def _admm_ips(S, support, rho=1., tau_inc=2., tau_decr=2., mu=None, tol=1e-6,
                 np.sum(S * X * support)
             f_vals_.append(func_val)
 
-            if mu is not None:
-                Y = U * rho  # this is the unscaled Y
-                if r_[-1] > mu * s_[-1]:
-                    rho *= tau_inc
-                elif s_[-1] > mu * r_[-1]:
-                    rho /= tau_decr
-                U = Y / rho  # newly scaled dual variable
+            rho = _update_rho(U, rho, r_[-1], s_[-1], mu, tau_inc, tau_decr)
             iter_count += 1
             if (_check_convergence(X, Z, Z_old, U, rho, tol_abs=tol) or
                     iter_count > max_iter):
@@ -526,13 +520,7 @@ def _admm_hgl2(S, htree, alpha, rho=1., tau_inc=1.1, tau_decr=1.1, mu=None,
             r_.append(linalg.norm(X - Z) / np.sqrt(p ** 2))
             s_.append(linalg.norm(Z - Z_old) / np.sqrt(p ** 2))
 
-            if mu is not None:
-                U *= rho  # this is the unscaled Y
-                if r_[-1] > mu * s_[-1]:
-                    rho *= tau_inc
-                elif s_[-1] > mu * r_[-1]:
-                    rho /= tau_decr
-                U /= rho  # newly scaled dual variable
+            rho = _update_rho(U, rho, r_[-1], s_[-1], mu, tau_inc, tau_decr)
             iter_count += 1
             if (_check_convergence(X, Z, Z_old, U, rho, tol_abs=tol) or
                     iter_count > max_iter):
@@ -549,6 +537,17 @@ def _check_convergence(X, Z, Z_old, U, rho, tol_abs=1e-12, tol_rel=1e-6):
     tol_dual = np.sqrt(n) * tol_abs / rho + tol_rel * np.linalg.norm(U)
     return (np.linalg.norm(X - Z) < tol_primal and
             np.linalg.norm(Z - Z_old) < tol_dual)
+
+
+def _update_rho(U, rho, r, s, mu, tau_inc, tau_decr):
+    if r > mu * s:
+        rho *= tau_inc
+        U /= tau_inc
+    elif s > mu * r:
+        rho /= tau_decr
+        U *= tau_decr
+    # U is changed inplace, no need for returning it
+    return rho
 
 
 def _pen_neg_log_likelihood(X, S, A=None):
