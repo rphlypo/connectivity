@@ -358,7 +358,9 @@ def _admm_gl(S, alpha, rho=1., tau_inc=2., tau_decr=2., mu=None, tol=1e-6,
             s_.append(linalg.norm(Z - Z_old) / (p ** 2))
             f_vals_.append(func_val)
 
-            rho = _update_rho(U, rho, r_[-1], s_[-1], mu, tau_inc, tau_decr)
+            if mu is not None:
+                rho = _update_rho(U, rho, r_[-1], s_[-1],
+                                  mu, tau_inc, tau_decr)
             iter_count += 1
             if (_check_convergence(X, Z, Z_old, U, rho, tol_abs=tol) or
                     iter_count > max_iter):
@@ -416,7 +418,9 @@ def _admm_ips(S, support, rho=1., tau_inc=2., tau_decr=2., mu=None, tol=1e-6,
                 np.sum(S * X * support)
             f_vals_.append(func_val)
 
-            rho = _update_rho(U, rho, r_[-1], s_[-1], mu, tau_inc, tau_decr)
+            if mu is not None:
+                rho = _update_rho(U, rho, r_[-1], s_[-1],
+                                  mu, tau_inc, tau_decr)
             iter_count += 1
             if (_check_convergence(X, Z, Z_old, U, rho, tol_abs=tol) or
                     iter_count > max_iter):
@@ -519,8 +523,9 @@ def _admm_hgl2(S, htree, alpha, rho=1., tau_inc=1.1, tau_decr=1.1, mu=None,
             U = U + X - Z
             r_.append(linalg.norm(X - Z) / np.sqrt(p ** 2))
             s_.append(linalg.norm(Z - Z_old) / np.sqrt(p ** 2))
-
-            rho = _update_rho(U, rho, r_[-1], s_[-1], mu, tau_inc, tau_decr)
+            if mu is not None:
+                rho = _update_rho(U, rho, r_[-1], s_[-1],
+                                  mu, tau_inc, tau_decr)
             iter_count += 1
             if (_check_convergence(X, Z, Z_old, U, rho, tol_abs=tol) or
                     iter_count > max_iter):
