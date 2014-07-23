@@ -69,7 +69,7 @@ class GraphLasso(EmpiricalCovariance):
 
     def fit(self, X, y=None, **kwargs):
         S = self._X_to_cov(X)
-        precision_, split_precision_, var_gap_, dual_gap_, f_vals_ =\
+        precision_, split_precision_, var_gap_, dual_gap_, f_vals_, rho_ =\
             _admm_gl(S, self.alpha, rho=self.rho, tol=self.tol,
                      max_iter=self.max_iter, mu=self.mu, **kwargs)
 
@@ -79,6 +79,7 @@ class GraphLasso(EmpiricalCovariance):
         self.var_gap_ = copy.deepcopy(var_gap_)
         self.dual_gap_ = copy.deepcopy(dual_gap_)
         self.f_vals_ = copy.deepcopy(f_vals_)
+        self.rho_ = rho_
         return self
 
     def _X_to_cov(self, X):
@@ -217,7 +218,7 @@ class IPS(GraphLasso):
 
     def fit(self, X, y=None, **kwargs):
         S = self._X_to_cov(X)
-        precision_, split_precision_, var_gap_, dual_gap_, f_vals_ =\
+        precision_, split_precision_, var_gap_, dual_gap_, f_vals_, rho_ =\
             _admm_ips(S, self.support, rho=self.rho, tol=self.tol,
                       max_iter=self.max_iter, **kwargs)
 
@@ -227,6 +228,7 @@ class IPS(GraphLasso):
         self.var_gap_ = copy.deepcopy(var_gap_)
         self.dual_gap_ = copy.deepcopy(dual_gap_)
         self.f_vals_ = copy.deepcopy(f_vals_)
+        self.rho_ = rho_
         return self
 
 
@@ -277,7 +279,7 @@ class HierarchicalGraphLasso(GraphLasso):
             self.htree_ = self.htree
         else:
             raise TypeError("htree must be an iterable or a HTree object")
-        precision_, split_precision_, var_gap_, dual_gap_, f_vals_ =\
+        precision_, split_precision_, var_gap_, dual_gap_, f_vals_, rho_ =\
             _admm_hgl2(S, self.htree_, self.alpha, rho=self.rho, tol=self.tol,
                        mu=self.mu, max_iter=self.max_iter,
                        alpha_func=self.alpha_func, **kwargs)
@@ -288,6 +290,7 @@ class HierarchicalGraphLasso(GraphLasso):
         self.var_gap_ = copy.deepcopy(var_gap_)
         self.dual_gap_ = copy.deepcopy(dual_gap_)
         self.f_vals_ = copy.deepcopy(f_vals_)
+        self.rho_ = rho_
         return self
 
 #   def _support_recovery_norm(self, X_test):
@@ -334,6 +337,7 @@ def _admm_gl(S, alpha, rho=1., tau_inc=2., tau_decr=2., mu=None, tol=1e-6,
     r_ = list()
     s_ = list()
     f_vals_ = list()
+    rho_ = [rho]
     iter_count = 0
     while True:
         try:
@@ -361,12 +365,13 @@ def _admm_gl(S, alpha, rho=1., tau_inc=2., tau_decr=2., mu=None, tol=1e-6,
             if mu is not None:
                 rho = _update_rho(U, rho, r_[-1], s_[-1],
                                   mu, tau_inc, tau_decr)
+                rho_.append(rho)
             iter_count += 1
             if (_check_convergence(X, Z, Z_old, U, rho, tol_abs=tol) or
                     iter_count > max_iter):
                 raise StopIteration
         except StopIteration:
-            return X, Z, r_, s_, f_vals_
+            return X, Z, r_, s_, f_vals_, rho_
 
 
 def _admm_ips(S, support, rho=1., tau_inc=2., tau_decr=2., mu=None, tol=1e-6,
@@ -397,6 +402,7 @@ def _admm_ips(S, support, rho=1., tau_inc=2., tau_decr=2., mu=None, tol=1e-6,
     r_ = list()
     s_ = list()
     f_vals_ = list()
+    rho_ = [rho]
     r_.append(linalg.norm(X - Z) / dof)
     s_.append(np.inf)
     f_vals_.append(_pen_neg_log_likelihood(X, S))
@@ -421,12 +427,13 @@ def _admm_ips(S, support, rho=1., tau_inc=2., tau_decr=2., mu=None, tol=1e-6,
             if mu is not None:
                 rho = _update_rho(U, rho, r_[-1], s_[-1],
                                   mu, tau_inc, tau_decr)
+                rho_.append(rho)
             iter_count += 1
             if (_check_convergence(X, Z, Z_old, U, rho, tol_abs=tol) or
                     iter_count > max_iter):
                 raise StopIteration
         except StopIteration:
-            return X, Z, r_, s_, f_vals_
+            return X, Z, r_, s_, f_vals_, rho_
 
 
 def _admm_hgl2(S, htree, alpha, rho=1., tau_inc=1.1, tau_decr=1.1, mu=None,
@@ -454,6 +461,7 @@ def _admm_hgl2(S, htree, alpha, rho=1., tau_inc=1.1, tau_decr=1.1, mu=None,
     r_ = list()
     s_ = list()
     f_vals_ = list()
+    rho_ = [rho]
     iter_count = 0
     # this returns an ordered list from leaves to root nodes
     nodes_levels = htree.root_.get_descendants()
@@ -492,8 +500,6 @@ def _admm_hgl2(S, htree, alpha, rho=1., tau_inc=1.1, tau_decr=1.1, mu=None,
             func_val = -np.sum(np.log(eigvals)) + np.sum(X * S)
             # proximal operator for Z: block norm soft thresholding
             Z = U + X
-            # TODO for a given level we could evaluate all in parallel!
-            # 'mounting' in the tree from leaves to root
 
             for level in np.arange(max_level, 0, -1):
                 # initialise alpha for given level
@@ -515,6 +521,7 @@ def _admm_hgl2(S, htree, alpha, rho=1., tau_inc=1.1, tau_decr=1.1, mu=None,
                 multipliers[norms_ > 0] = \
                     1. - alpha_ / (rho * norms_[norms_ > 0])
                 multipliers = (multipliers > 0) * multipliers
+                # the next line is necessary to maintain diagonal blocks
                 multipliers = np.concatenate((np.array([1.]), multipliers))
                 Z = multipliers[L + L.T] * Z
                 func_val += 2 * alpha_ * np.sum(Xnorms)
@@ -526,12 +533,13 @@ def _admm_hgl2(S, htree, alpha, rho=1., tau_inc=1.1, tau_decr=1.1, mu=None,
             if mu is not None:
                 rho = _update_rho(U, rho, r_[-1], s_[-1],
                                   mu, tau_inc, tau_decr)
+                rho_.append(rho)
             iter_count += 1
             if (_check_convergence(X, Z, Z_old, U, rho, tol_abs=tol) or
                     iter_count > max_iter):
                 raise StopIteration
         except StopIteration:
-            return X, Z, r_, s_, f_vals_
+            return X, Z, r_, s_, f_vals_, rho_
 
 
 def _check_convergence(X, Z, Z_old, U, rho, tol_abs=1e-12, tol_rel=1e-6):
