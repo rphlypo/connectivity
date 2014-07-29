@@ -27,9 +27,13 @@ def test_grad_f_graphlasso():
     # the optimal should be when S = inv(Theta), hence zero gradient
     assert_almost_equal(fista_gl.grad_f_graphlasso(Theta, Theta_inv),
                         np.zeros((p, p)))
+    assert_almost_equal(fista_gl.grad_f_graphlasso(Theta, Theta_inv),
+                        np.zeros((p, p)), Hessian=True)
     # test whether this works for the eigen decomposition
     assert_almost_equal(fista_gl.grad_f_graphlasso(Theta_, Theta_inv),
                         np.zeros((p, p)))
+    assert_almost_equal(fista_gl.grad_f_graphlasso(Theta_, Theta_inv),
+                        np.zeros((p, p)), Hessian=True)
 
 
 def test_pL_graphlasso():
@@ -58,3 +62,7 @@ def test_Q_graphlasso():
     L *= np.sqrt(np.sum(1. / Theta_[0] ** 2))
     assert_array_less(f_Z + g_Z,
                       fista_gl.Q_graphlasso(Z, Theta, grad, L, .5, f_Theta))
+    # Does this hold for the Hessian update ?
+    gradH = fista_gl.grad_f_graphlasso(Theta, S, Hessian=True)
+    assert_array_less(f_Z + g_Z,
+                      fista_gl.Q_graphlasso(Z, Theta, gradH, L, .5, f_Theta))
