@@ -6,7 +6,6 @@ import sklearn.utils.extmath
 import copy
 import numbers
 
-
 from scipy.ndimage.measurements import mean as label_mean
 from scipy.special import gamma as gamma_func
 
@@ -54,7 +53,8 @@ class GraphLasso(EmpiricalCovariance):
     """
     def __init__(self, alpha, tol=1e-6, max_iter=1e4, verbose=0,
                  base_estimator=None,
-                 scale_2_corr=True, rho=1., mu=None, score_norm=None):
+                 scale_2_corr=True, rho=1., mu=None,
+                 score_norm='loglikelihood'):
         self.alpha = alpha
         self.tol = tol
         self.max_iter = max_iter
@@ -94,8 +94,7 @@ class GraphLasso(EmpiricalCovariance):
         return S
 
     def score(self, X_test, y=None):
-        """Computes the log-likelihood of a Gaussian data set with
-        `self.covariance_` as an estimator of its covariance matrix.
+        """Computes the log-likelihood or an error_norm
 
         Parameters
         ----------
@@ -105,17 +104,16 @@ class GraphLasso(EmpiricalCovariance):
             X_test is assumed to be drawn from the same distribution than
             the data used in fit (including centering).
 
-        y : not used, present for API consistence purpose.
+        y : not used, present for API consistency purposes.
 
         Returns
         -------
         res : float
-            The likelihood of the data set with `self.covariance_` as an
-            estimator of its covariance matrix.
+            log-likelihood or error norm
 
         """
         # compute empirical covariance of the test set
-        if self.score_norm is not None:
+        if self.score_norm != 'loglikelihood':
             return self._error_norm(X_test, norm=self.score_norm)
         else:
             test_cov = self.base_estimator_.fit(X_test).covariance_
@@ -124,9 +122,8 @@ class GraphLasso(EmpiricalCovariance):
             # compute log likelihood
             return log_likelihood(self.precision_, test_cov)
 
-    def _error_norm(self, X_test, norm="Fro"):
-        """Computes the Mean Squared Error between two covariance estimators.
-        (In the sense of the Frobenius norm).
+    def _error_norm(self, X_test, norm="Fro", **kwargs):
+        """Computes an error between a covariance and its estimator
 
         Parameters
         ----------
@@ -142,8 +139,13 @@ class GraphLasso(EmpiricalCovariance):
             - 'invFro': sqrt(trace(B.T.dot(B)))
             - 'KL': actually Jensen's divergence (symmetrised KL)
             - 'bregman': (-log(det(Theta.dot(S))) + trace(Theta.dot(S)) - p)/2
+            - 'ell0': ||B||_0 =  sum(XOR(test_precision, model_precision))/2
+                related to accuracy
             where A is the error ``(test_covariance - model_covariance)``
             and   B is the error ``(test_precision - model_precision)``
+
+        keyword arguments can be passed to the different error computations
+
         Returns
         -------
         A distance measuring the divergence between the model and the test set
@@ -179,7 +181,7 @@ class GraphLasso(EmpiricalCovariance):
                 test_cov.dot(self.precision_)) / 2.
         elif norm == "ell0":
             # X_test acts as a mask
-            error_norm = self._support_recovery_norm(X_test)
+            error_norm = self._support_recovery_norm(X_test, **kwargs)
         elif norm == "bregman":
             test_mx = test_cov.dot(self.precision_)
             # negative log-det bregman divergence
@@ -189,13 +191,36 @@ class GraphLasso(EmpiricalCovariance):
         else:
             raise NotImplementedError(
                 "Only the following norms are implemented:\n"
-                "spectral, Frobenius, inverse Frobenius, and geodesic")
+                "spectral, Frobenius, inverse Frobenius, geodesic, KL, ell0, "
+                "bregman")
         return error_norm
 
-    def _support_recovery_norm(self, X_test):
+    def _support_recovery_norm(self, X_test, relative=False):
+        """ accuracy related error pseudo-norm
+
+        Parameters
+        ----------
+        X_test : positive-definite, symmetric numpy.ndarray of shape (p, p)
+            the target precision matrix
+
+        relative: boolean
+            whether the error is given as a percentage or as an absolute
+            number of counts
+
+
+        Returns
+        -------
+        ell0 pseudo-norm between X_test and the estimator
+
+        """
+        if relative:
+            p = X_test.shape[0]
+            c = p * (p - 1)
+        else:
+            c = 2.
         return np.sum(np.logical_xor(
             np.abs(self.auxiliary_prec_) > machine_eps(0),
-            np.abs(X_test) > machine_eps(0))) / 2
+            np.abs(X_test) > machine_eps(0))) / c
 
 
 class IPS(GraphLasso):
@@ -203,7 +228,8 @@ class IPS(GraphLasso):
     """
     def __init__(self, support, tol=1e-6, max_iter=100, verbose=0,
                  base_estimator=None,
-                 scale_2_corr=True, rho=1., mu=None, score_norm=None):
+                 scale_2_corr=True, rho=1., mu=None,
+                 score_norm='loglikelihood'):
         self.support = support
         self.tol = tol
         self.max_iter = max_iter
@@ -235,7 +261,7 @@ class IPS(GraphLasso):
 class HierarchicalGraphLasso(GraphLasso):
     def __init__(self, htree, alpha, tol=1e-6, max_iter=1e4, verbose=0,
                  base_estimator=None, scale_2_corr=True, rho=1., mu=None,
-                 score_norm=None, n_jobs=1, alpha_func=None):
+                 score_norm='loglikelihood', n_jobs=1, alpha_func=None):
         """ hierarchical version of graph lasso with ell1-2 penalty
 
         arguments (complimentary to GraphLasso)
@@ -325,11 +351,11 @@ def _admm_gl(S, alpha, rho=1., tau_inc=2., tau_decr=2., mu=None, tol=1e-6,
     else:
         X = Xinit
     if Zinit is None:
-        Z = (1. + rho) / rho * np.identity(p)
+        Z = np.identity(p)
     else:
         Z = Zinit
     if Uinit is None:
-        U = Z - X
+        U = X - Z
     else:
         U = Uinit
     if isinstance(alpha, numbers.Number):
@@ -343,21 +369,21 @@ def _admm_gl(S, alpha, rho=1., tau_inc=2., tau_decr=2., mu=None, tol=1e-6,
         try:
             Z_old = Z.copy()
             # closed form optimization for X
-            eigvals, eigvecs = linalg.eigh(rho * (Z - U) - S)
+            eigvals, eigvecs = linalg.eigh(rho * (Z + U) - S)
             eigvals /= 2
             eigvals = (eigvals + (eigvals ** 2 + rho) ** (1. / 2)) / rho
             X = eigvecs.dot(np.diag(eigvals).dot(eigvecs.T))
             func_val = -np.sum(np.log(eigvals)) + np.sum(S * X)
             func_val += np.sum(alpha * np.abs(X))
             # proximal operator for Z: soft thresholding
-            tmp = np.abs(X + U) - alpha / rho
-            Z = np.sign(X + U) * tmp * (tmp > 0)
+            tmp = np.abs(X - U) - alpha / rho
+            Z = np.sign(X - U) * tmp * (tmp > 0.)
 #           Z = np.sign(X + U) * np.max(
 #               np.reshape(np.concatenate((np.abs(X + U) - alpha / rho,
 #                                          np.zeros((p, p))), axis=1),
 #                          (p, p, -1), order="F"), axis=2)
             # update scaled dual variable
-            U = U + X - Z
+            U = U + Z - X
             r_.append(linalg.norm(X - Z) / (p ** 2))
             s_.append(linalg.norm(Z - Z_old) / (p ** 2))
             f_vals_.append(func_val)
@@ -580,15 +606,16 @@ def log_likelihood(precision, covariance):
 
 def _cov_2_corr(covariance):
     p = covariance.shape[0]
-    scale = np.diag(covariance.flat[::p + 1] ** (-1. / 2))
-    correlation = scale.dot(covariance.dot(scale))
+    scale = np.atleast_2d(np.sqrt(covariance.flat[::p + 1]))
+    correlation = covariance * scale * scale.T
     # guarantee symmetry
     return (correlation + correlation.T) / 2.
 
 
-def cross_val(X, method='gl', alpha_tol=1e-2,
+def cross_val(X, y=None, method='gl', alpha_tol=1e-2,
               n_iter=100, train_size=.1, test_size=.5,
-              model_prec=None, verbose=0, n_jobs=1,
+              model_prec=None, model_cov=None,
+              verbose=0, n_jobs=1,
               random_state=None, ips_flag=False,
               score_norm="KL", CV_norm=None,
               optim_h=False, **kwargs):
@@ -599,10 +626,16 @@ def cross_val(X, method='gl', alpha_tol=1e-2,
     # logging.INFO is at level 20, verbose 10
     # logging.DEBUG is at level 10, verbose 20
     logger.setLevel(logging.WARNING - verbose)
-    bs = cross_validation.Bootstrap(X.shape[0], n_iter=n_iter,
-                                    train_size=train_size,
-                                    test_size=test_size,
-                                    random_state=random_state)
+
+    if y is None:
+        shuffle_split = cross_validation.ShuffleSplit(
+            X.shape[0], n_iter=n_iter, test_size=test_size,
+            train_size=train_size, random_state=random_state)
+    else:
+        shuffle_split = cross_validation.StratifiedShuffleSplit(
+            y, n_iter=n_iter, test_size=test_size, train_size=train_size,
+            random_state=random_state)
+
     if method == 'gl':
         cov_learner = GraphLasso
     elif method == 'hgl':
@@ -617,16 +650,16 @@ def cross_val(X, method='gl', alpha_tol=1e-2,
         CV_norm = score_norm
     # alpha_max ?
     alphas = np.linspace(0., 1., 5)
-    LL = np.zeros((5,))
-    LL_ = list()
+    score = np.zeros((5,))
+    score_ = list()
 #   for (ix, alpha) in enumerate(alphas):
 #       cov_learner_ = cov_learner(alpha=alpha, score_norm=CV_norm,
 #                                  **kwargs)
 #       res_ = Parallel(n_jobs=n_jobs)(delayed(_eval_cov_learner)(
 #           X, train_ix, test_ix, model_prec, cov_learner_, ips_flag)
 #           for train_ix, test_ix in bs)
-#       LL[ix] = np.mean(np.array(res_))
-#   LL_.append(LL[2])
+#       score[ix] = np.mean(np.array(res_))
+#   score_.append(score[2])
     first_run_alpha = True
     while True:
         try:
@@ -643,12 +676,12 @@ def cross_val(X, method='gl', alpha_tol=1e-2,
                     cov_learner_ = cov_learner(alpha=alpha, score_norm=CV_norm,
                                                **kwargs)
                     res_ = Parallel(n_jobs=n_jobs)(delayed(_eval_cov_learner)(
-                        X, train_ix, test_ix, model_prec, cov_learner_,
-                        ips_flag)
-                        for train_ix, test_ix in bs)
-                    LL[ix] = np.mean(np.array(res_))
+                        X, train_ix, test_ix, model_prec, model_cov,
+                        cov_learner_, ips_flag)
+                        for train_ix, test_ix in shuffle_split)
+                    score[ix] = np.mean(np.array(res_))
                 else:
-                    LLh = np.zeros((5,))
+                    scoreh = np.zeros((5,))
                     hs = np.linspace(0, 1., 5)
                     first_run_h = True
                     while True:
@@ -667,39 +700,40 @@ def cross_val(X, method='gl', alpha_tol=1e-2,
                                 res_h = Parallel(n_jobs=n_jobs)(
                                     delayed(_eval_cov_learner)(
                                         X, train_ix, test_ix, model_prec,
-                                        cov_learner_h, ips_flag)
-                                    for train_ix, test_ix in bs)
-                                LLh[ixh] = np.mean(np.array(res_h))
-                            max_ixh = min(max(np.argmax(LLh), 1), 3)
-                            LLh[0] = LLh[max_ixh - 1]
-                            LLh[4] = LLh[max_ixh + 1]
-                            LLh[2] = LLh[max_ixh]
+                                        model_cov, cov_learner_h, ips_flag)
+                                    for train_ix, test_ix in shuffle_split)
+                                scoreh[ixh] = np.mean(np.array(res_h))
+                            max_ixh = min(max(np.argmax(scoreh), 1), 3)
+                            scoreh[0] = scoreh[max_ixh - 1]
+                            scoreh[4] = scoreh[max_ixh + 1]
+                            scoreh[2] = scoreh[max_ixh]
+                            scoreh[1] = scoreh[3] = 0.
                             hs = np.linspace(hs[max_ixh - 1],
                                              hs[max_ixh + 1], 5)
-                            if hs[4] - hs[0] < .1:
+                            if hs[4] - hs[0] <= .1:
                                 raise StopIteration
                         except StopIteration:
-                            LL[ix] = np.min(LLh)
-                            h_opt = hs[np.argmin(LLh)]
+                            score[ix] = np.max(scoreh)
+                            h_opt = hs[np.argmax(scoreh)]
                             break
                         first_run_h = False
 
-            max_ix = min(max(np.argmax(LL), 1), 3)
-            LL[0] = LL[max_ix - 1]
-            LL[4] = LL[max_ix + 1]
-            LL[2] = LL[max_ix]
-            LL[1] = LL[3] = 0.
+            max_ix = min(max(np.argmax(score), 1), 3)
+            score[0] = score[max_ix - 1]
+            score[4] = score[max_ix + 1]
+            score[2] = score[max_ix]
+            score[1] = score[3] = 0.
             alphas = np.linspace(alphas[max_ix - 1], alphas[max_ix + 1], 5)
-            if alphas[4] - alphas[0] < alpha_tol:
+            if alphas[4] - alphas[0] <= alpha_tol:
                 raise StopIteration
-            LL_.append(np.min(LL))
-            alpha_opt = alphas[np.argmin(LL)]
+            score_.append(np.max(score))
+            alpha_opt = alphas[np.argmax(score)]
         except StopIteration:
             if score_norm == CV_norm:
                 if method != 'hgl' or not optim_h:
-                    return alpha_opt, LL_
+                    return alpha_opt, score_
                 else:
-                    return alpha_opt, LL_, h_opt
+                    return alpha_opt, score_, h_opt
             else:
                 if method != 'hgl' or not optim_h:
                     cov_learner_ = cov_learner(alpha=alpha_opt,
@@ -707,11 +741,11 @@ def cross_val(X, method='gl', alpha_tol=1e-2,
                                                **kwargs)
                     res_ = Parallel(n_jobs=n_jobs)(
                         delayed(_eval_cov_learner)(
-                            X, train_ix, test_ix, model_prec, cov_learner_,
-                            ips_flag)
-                        for train_ix, test_ix in bs)
-                    LL_star = np.mean(np.array(res_))
-                    return alpha_opt, LL_, LL_star
+                            X, train_ix, test_ix, model_prec, model_cov,
+                            cov_learner_, ips_flag)
+                        for train_ix, test_ix in shuffle_split)
+                    score_star = np.mean(np.array(res_))
+                    return alpha_opt, score_, score_star
                 else:
                     cov_learner_ = cov_learner(
                         alpha=alpha_opt, score_norm=score_norm,
@@ -720,22 +754,25 @@ def cross_val(X, method='gl', alpha_tol=1e-2,
                         **kwargs)
                     res_ = Parallel(n_jobs=n_jobs)(
                         delayed(_eval_cov_learner)(
-                            X, train_ix, test_ix, model_prec, cov_learner_,
-                            ips_flag)
-                        for train_ix, test_ix in bs)
-                    LL_star = np.mean(np.array(res_))
-                    return alpha_opt, LL_, h_opt, LL_star
+                            X, train_ix, test_ix, model_prec, model_cov,
+                            cov_learner_, ips_flag)
+                        for train_ix, test_ix in shuffle_split)
+                    score_star = np.mean(np.array(res_))
+                    return alpha_opt, score_, h_opt, score_star
         first_run_alpha = False
 
 
-def _eval_cov_learner(X, train_ix, test_ix, model_prec, cov_learner,
-                      ips_flag=True):
+def _eval_cov_learner(X, train_ix, test_ix, model_prec, model_cov,
+                      cov_learner, ips_flag=True):
     X_train = X[train_ix, ...]
-    if model_prec is None:
+    if model_prec is None and model_cov is None:
         X_test = X[test_ix, ...]
-    else:
+    elif model_cov is None:
         eigvals, eigvecs = linalg.eigh(model_prec)
         X_test = np.diag(1. / np.sqrt(eigvals)).dot(eigvecs.T)
+    else:
+        eigvals, eigvecs = linalg.eigh(model_prec)
+        X_test = np.diag(np.sqrt(eigvals)).dot(eigvecs.T)
     cov_learner_ = clone(cov_learner)
     if not ips_flag:
         score = cov_learner_.fit(X_train).score(X_test)
@@ -749,9 +786,17 @@ def _eval_cov_learner(X, train_ix, test_ix, model_prec, cov_learner,
         raise ValueError('ell0 scoring in CV_loop and IPS are incompatible')
 
     # make scores maximal at optimum
-    if cov_learner_.score_norm is not None:
+    if cov_learner_.score_norm not in {'loglikelihood', None}:
         score *= -1.
     return score
+
+
+def alpha_max(X, base_estimator=EmpiricalCovariance(assume_centered=True)):
+    _check_estimator(base_estimator)
+    _check_2D_array(X)
+    C = _cov_2_corr(base_estimator.fit(X).covariance_)
+    C.flat[::C.shape[0] + 1] = 0.
+    return np.max(np.abs(C))
 
 
 def _alpha_func(alpha, lev, h=1., max_level=1.):
@@ -791,6 +836,18 @@ def ric(mx, mask=None):
     G_ScS = Gamma[np.ix_(non_edge_set, edge_set)]
     G_SS = Gamma[np.ix_(edge_set, edge_set)]
     return np.max(np.sum(np.abs(G_ScS.dot(G_SS)), axis=1))
+
+
+def _check_estimator(base_estimator):
+    if not hasattr(base_estimator, 'get_precision'):
+        raise ValueError('Your base_estimator is not a covariance estimator')
+
+
+def _check_2D_array(X):
+    if not isinstance(X, np.ndarray):
+        raise ValueError("X must be a 'numpy.ndarray' object")
+    if X.ndim != 2:
+        raise ValueError('X must be a 2-dimensional array')
 
 
 def machine_eps(f):
