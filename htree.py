@@ -168,6 +168,7 @@ def construct_tree(arity=8, depth=3):
     while True:
         try:
             tree = HTree(hierarchical_tree(arity=arity, depth=depth)).create()
+            # randomness could result in twice the same ID, repeat if needed
             if len(np.unique(tree.root_.value_)) == len(tree.root_.value_):
                 raise StopIteration
         except StopIteration:
