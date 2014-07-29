@@ -765,6 +765,7 @@ def cross_val(X, y=None, method='gl', alpha_tol=1e-2,
 def _eval_cov_learner(X, train_ix, test_ix, model_prec, model_cov,
                       cov_learner, ips_flag=True):
     X_train = X[train_ix, ...]
+    alpha_max_ = alpha_max(X_train)
     if model_prec is None and model_cov is None:
         X_test = X[test_ix, ...]
     elif model_cov is None:
@@ -774,6 +775,7 @@ def _eval_cov_learner(X, train_ix, test_ix, model_prec, model_cov,
         eigvals, eigvecs = linalg.eigh(model_prec)
         X_test = np.diag(np.sqrt(eigvals)).dot(eigvecs.T)
     cov_learner_ = clone(cov_learner)
+    cov_learner_.__setattr__('alpha', cov_learner_.alpha * alpha_max_)
     if not ips_flag:
         score = cov_learner_.fit(X_train).score(X_test)
     elif cov_learner.score_norm != "ell0":
