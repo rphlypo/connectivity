@@ -52,7 +52,7 @@ class GraphLasso(EmpiricalCovariance):
             ressemblance enforcing penalty between split variables
     """
     def __init__(self, alpha, tol=1e-6, max_iter=1e4, verbose=0,
-                 base_estimator=None,
+                 base_estimator=EmpiricalCovariance(assume_centered=True),
                  scale_2_corr=True, rho=1., mu=None,
                  score_norm='loglikelihood'):
         self.alpha = alpha
@@ -83,10 +83,7 @@ class GraphLasso(EmpiricalCovariance):
         return self
 
     def _X_to_cov(self, X):
-        if self.base_estimator is None:
-            self.base_estimator_ = EmpiricalCovariance(assume_centered=True)
-        else:
-            self.base_estimator_ = clone(self.base_estimator)
+        self.base_estimator_ = clone(self.base_estimator)
         logger.setLevel(self.verbose)
         S = self.base_estimator_.fit(X).covariance_
         if self.scale_2_corr:
@@ -227,7 +224,7 @@ class IPS(GraphLasso):
     """ the estimator class for GraphLasso based on ADMM
     """
     def __init__(self, support, tol=1e-6, max_iter=100, verbose=0,
-                 base_estimator=None,
+                 base_estimator=EmpiricalCovariance(assume_centered=True),
                  scale_2_corr=True, rho=1., mu=None,
                  score_norm='loglikelihood'):
         self.support = support
@@ -260,7 +257,8 @@ class IPS(GraphLasso):
 
 class HierarchicalGraphLasso(GraphLasso):
     def __init__(self, htree, alpha, tol=1e-6, max_iter=1e4, verbose=0,
-                 base_estimator=None, scale_2_corr=True, rho=1., mu=None,
+                 base_estimator=EmpiricalCovariance(assume_centered=True),
+                 scale_2_corr=True, rho=1., mu=None,
                  score_norm='loglikelihood', n_jobs=1, alpha_func=None):
         """ hierarchical version of graph lasso with ell1-2 penalty
 
