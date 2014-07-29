@@ -10,14 +10,14 @@ from getpass import getuser
 
 import numpy as np
 from joblib import Memory, Parallel, delayed
-import scipy.linalg
 
 from sklearn.utils.extmath import randomized_svd
 from sklearn.cluster import MiniBatchKMeans, KMeans
 import nibabel
 import covariance_learn as cvl
 
-from sklearn.covariance import LedoitWolf
+from sklearn.covariance import EmpiricalCovariance, LedoitWolf
+from sklearn.utils import check_random_state
 
 from nilearn.decomposition.multi_pca import MultiPCA
 from nilearn.input_data import NiftiMasker, NiftiLabelsMasker
@@ -153,65 +153,82 @@ def do_k_means(data, n_clusters):
     return k_means.labels_
 
 
-def compute_optimal_params(subject_dir, method='hgl', sess_ix=None, **kwargs):
+def compute_optimal_params(subject_dir, method='hgl', sess_ix=None,
+                           random_state=None,
+                           base_estimator=EmpiricalCovariance(
+                               assume_centered=True),
+                           **kwargs):
     get_data_ = mem.cache(get_data)
     subj_data = get_data_(subject_dir)
     # random session for training
     if sess_ix is None:
-        sess_ix = np.random.randint(2) + 1
+        randgen = check_random_state(random_state)
+        sess_ix = randgen.randint(2) + 1
+    if len(subj_data) < 4:
+        raise ValueError("not all sessions present")
     X = np.concatenate([d["data"] for d in subj_data
                         if d["session"] == sess_ix], axis=0)
+    y = np.concatenate([np.zeros((d['data'].shape[0],))
+                        if d['scan'] == 'LR'
+                        else np.ones((d['data'].shape[0],))
+                        for d in subj_data
+                        if d['session'] == sess_ix])
     # complementary session
     Y = np.concatenate([d["data"] for d in subj_data
                         if d["session"] == 3 - sess_ix], axis=0)
-    Theta = scipy.linalg.inv(Y.T.dot(Y) / Y.shape[0])
-    return cvl.cross_val(X, method=method, alpha_tol=1e-2, n_iter=1,
-                         optim_h=True, train_size=.99, test_size=0.01,
-                         model_prec=Theta,
-                         n_jobs=min({N_JOBS, 10}), random_state=12345,
-                         tol=1e-3, **kwargs)
+    base_estimator.fit(Y)
+    Theta = base_estimator.precision_
+    S = base_estimator.covariance_
+    return cvl.cross_val(X, y, method=method, alpha_tol=1e-2, n_iter=6,
+                         optim_h=True, train_size=1. / 6, test_size=2,
+                         model_prec=Theta, model_cov=S,
+                         n_jobs=min({N_JOBS, 10}), random_state=random_state,
+                         tol=1e-2, **kwargs)
 
 
-def compare_hgl_gl(subject_dir=subject_dirs):
-    results_ = {'hgl': {'score': [], 'alpha': [], 'h': []},
-                'gl': {'score': [], 'alpha': []}}
-    results = {'LW': results_, 'empcov': results_}
-    sess_ix = np.random.randint(2) + 1
+def compare_hgl_gl(subject_dir=subject_dirs[0], random_state=None):
+    randgen = check_random_state(random_state)
+    sess_ix = randgen.randint(2) + 1
+    results = list()
     comp_opt_params = mem.cache(compute_optimal_params)
-    if not hasattr(subject_dir, '__iter__'):
-        subject_dir = [subject_dir]
-#   res1 = Parallel(n_jobs=6)(delayed(comp_opt_params)(
-#       sd, method='hgl', htree=TREE) for sd in subject_dir)
-    res1 = comp_opt_params(subject_dir[0], method='hgl', sess_ix=sess_ix,
-                           htree=TREE)
-    res = zip(*res1)
-    results['emp_cov']['hgl']['score'] = [r[-1] for r in res[1]]
-    results['emp_cov']['hgl']['alpha'] = res[0]
-    results['emp_cov']['hgl']['h'] = res[2]
-    res1 = comp_opt_params(subject_dir[0], method='hgl', sess_ix=sess_ix,
-                           htree=TREE,
-                           base_estimator=LedoitWolf(assume_centered=True))
-    res = zip(*res1)
-    results['LW']['hgl']['score'] = [r[-1] for r in res[1]]
-    results['LW']['hgl']['alpha'] = res[0]
-    results['LW']['hgl']['h'] = res[2]
-#   res2 = Parallel(n_jobs=6)(delayed(comp_opt_params)(
-#       sd, method='gl') for sd in subject_dir)
-    res2 = comp_opt_params(subject_dir[0], method='gl', sess_ix=sess_ix)
-    res = zip(*res2)
-    results['emp_cov']['gl']['score'] = [r[-1] for r in res[1]]
-    results['emp_cov']['gl']['alpha'] = res[0]
-    res2 = comp_opt_params(subject_dir[0], method='gl', sess_ix=sess_ix,
-                           base_estimator=LedoitWolf(assume_centered=True))
-    res = zip(*res2)
-    results['LW']['gl']['score'] = [r[-1] for r in res[1]]
-    results['LW']['gl']['alpha'] = res[0]
-    return results
+    try:
+        res = comp_opt_params(subject_dir, method='hgl', sess_ix=sess_ix,
+                              htree=TREE)
+        results.append({'method': 'hgl',
+                        'cov': 'empirical',
+                        'score': res[1][-1],
+                        'alpha': res[0],
+                        'h': res[2]})
+
+        res = comp_opt_params(subject_dir, method='hgl', sess_ix=sess_ix,
+                              htree=TREE,
+                              base_estimator=LedoitWolf(assume_centered=True))
+        results.append({'method': 'hgl',
+                        'cov': 'LedoitWolf',
+                        'score': res[1][-1],
+                        'alpha': res[0],
+                        'h': res[2]})
+
+        res = comp_opt_params(subject_dir, method='gl', sess_ix=sess_ix)
+        results.append({'method': 'gl',
+                        'cov': 'empirical',
+                        'score': res[1][-1],
+                        'alpha': res[0]})
+
+        res = comp_opt_params(subject_dir, method='gl', sess_ix=sess_ix,
+                              base_estimator=LedoitWolf(assume_centered=True))
+        results.append({'method': 'gl',
+                        'cov': 'LedoitWolf',
+                        'score': res[1][-1],
+                        'alpha': res[0]})
+        return results
+    except ValueError:
+        pass
 
 
-def run_analysis(subject_dirs=subject_dirs):
-    results = Parallel(n_jobs=5)(delayed(compare_hgl_gl)(sd)
-                                 for sd in subject_dirs)
+def run_analysis(subject_dirs=subject_dirs, n_jobs=1, random_state=12345):
+    results = Parallel(n_jobs=n_jobs)(delayed(compare_hgl_gl)(
+        sd, random_state=random_state) for sd in subject_dirs)
     return results
 
 
