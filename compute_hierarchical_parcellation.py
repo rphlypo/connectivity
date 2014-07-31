@@ -4,6 +4,7 @@ Apply a divisive K-means strategy to have a hierarchical set of parcels
 import glob
 import os
 import socket
+import operator
 
 from multiprocessing import cpu_count
 from getpass import getuser
@@ -194,6 +195,8 @@ def compare_hgl_gl(subject_dir=subject_dirs[0], random_state=None):
     try:
         res = comp_opt_params(subject_dir, method='hgl', sess_ix=sess_ix,
                               htree=TREE)
+        print res
+        raise Exception
         results.append({'method': 'hgl',
                         'cov': 'empirical',
                         'score': res[1][-1],
@@ -227,9 +230,11 @@ def compare_hgl_gl(subject_dir=subject_dirs[0], random_state=None):
 
 
 def run_analysis(subject_dirs=subject_dirs, n_jobs=1, random_state=12345):
-    results = Parallel(n_jobs=n_jobs)(delayed(compare_hgl_gl)(
+    compare_hgl_gl_ = mem.cache(compare_hgl_gl)
+    results = Parallel(n_jobs=n_jobs)(delayed(compare_hgl_gl_)(
         sd, random_state=random_state) for sd in subject_dirs)
-    return results
+    results_ = [r for r in results if r is not None]
+    return reduce(operator.add, results_)
 
 
 if __name__ == "__main__":
