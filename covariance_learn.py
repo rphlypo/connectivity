@@ -699,10 +699,10 @@ def cross_val(X, y=None, method='gl', alpha_tol=1e-2,
             score[2] = score[max_ix]
             score[1] = score[3] = 0.
             alphas = np.linspace(alphas[max_ix - 1], alphas[max_ix + 1], 5)
-            if alphas[4] - alphas[0] <= alpha_tol:
-                raise StopIteration
             score_.append(np.max(score))
             alpha_opt = alphas[np.argmax(score)]
+            if alphas[4] - alphas[0] <= alpha_tol:
+                raise StopIteration
         except StopIteration:
             if score_norm == CV_norm:
                 if method != 'hgl' or not optim_h:
