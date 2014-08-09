@@ -582,7 +582,7 @@ def log_likelihood(precision, covariance):
 def _cov_2_corr(covariance):
     p = covariance.shape[0]
     scale = np.atleast_2d(np.sqrt(covariance.flat[::p + 1]))
-    correlation = covariance * scale * scale.T
+    correlation = covariance / scale / scale.T
     # guarantee symmetry
     return (correlation + correlation.T) / 2.
 
