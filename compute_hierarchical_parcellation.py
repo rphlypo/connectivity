@@ -4,21 +4,21 @@ Apply a divisive K-means strategy to have a hierarchical set of parcels
 import glob
 import os
 import socket
-import operator
 
 from multiprocessing import cpu_count
 from getpass import getuser
 
 import numpy as np
 from joblib import Memory, Parallel, delayed
+import scipy.linalg
 
 from sklearn.utils.extmath import randomized_svd
 from sklearn.cluster import MiniBatchKMeans, KMeans
+from sklearn.utils import check_random_state
 import nibabel
 import covariance_learn as cvl
 
-from sklearn.covariance import EmpiricalCovariance, LedoitWolf
-from sklearn.utils import check_random_state
+from sklearn.covariance import LedoitWolf
 
 from nilearn.decomposition.multi_pca import MultiPCA
 from nilearn.input_data import NiftiMasker, NiftiLabelsMasker
@@ -115,7 +115,7 @@ def get_data(subject_dir, labels_img='labels_level_3.nii.gz',
 
 ###############################################################################
 if getuser() == 'rphlypo' and socket.gethostname() == 'is151225':
-    mem = Memory(cachedir='/volatile/workspace/tmp/connectivity_joblib')
+    mem = Memory(cachedir='/volatile/workspace/tmp/connectivity_joblib')    
 elif socket.gethostname() == 'drago' and getuser() == 'rphlypo':
     mem = Memory(cachedir='/storage/workspace/rphlypo/hierarchical/joblib')
 else:
@@ -155,87 +155,88 @@ def do_k_means(data, n_clusters):
 
 
 def compute_optimal_params(subject_dir, method='hgl', sess_ix=None,
-                           random_state=None,
-                           base_estimator=EmpiricalCovariance(
-                               assume_centered=True),
-                           **kwargs):
+                           random_state=None, **kwargs):
+    randgen = check_random_state(random_state)
     get_data_ = mem.cache(get_data)
     subj_data = get_data_(subject_dir)
+    if len(subj_data) < 4:
+        raise ValueError('Incomplete data')    
     # random session for training
     if sess_ix is None:
-        randgen = check_random_state(random_state)
         sess_ix = randgen.randint(2) + 1
-    if len(subj_data) < 4:
-        raise ValueError("not all sessions present")
     X = np.concatenate([d["data"] for d in subj_data
                         if d["session"] == sess_ix], axis=0)
-    y = np.concatenate([np.zeros((d['data'].shape[0],))
-                        if d['scan'] == 'LR'
-                        else np.ones((d['data'].shape[0],))
-                        for d in subj_data
-                        if d['session'] == sess_ix])
     # complementary session
     Y = np.concatenate([d["data"] for d in subj_data
                         if d["session"] == 3 - sess_ix], axis=0)
-    base_estimator.fit(Y)
-    Theta = base_estimator.precision_
-    S = base_estimator.covariance_
-    return cvl.cross_val(X, y, method=method, alpha_tol=1e-2, n_iter=6,
-                         optim_h=True, train_size=1. / 6, test_size=2,
-                         model_prec=Theta, model_cov=S,
-                         n_jobs=min({N_JOBS, 10}), random_state=random_state,
-                         tol=1e-2, **kwargs)
+    Theta = scipy.linalg.inv(Y.T.dot(Y) / Y.shape[0])
+    return cvl.cross_val(X, method=method, alpha_tol=1e-2, n_iter=1,
+                         optim_h=True, train_size=.99, test_size=0.01,
+                         model_prec=Theta, n_jobs=min({N_JOBS, 10}),
+                         random_state=random_state, tol=1e-3, **kwargs)
 
 
-def compare_hgl_gl(subject_dir=subject_dirs[0], random_state=None):
+def compare_hgl_gl(subject_dir=subject_dirs, random_state=None):
+    if random_state == 'subject':
+        random_state = int(split_path(subject_dir)[-3])
+        print 'random_state = {}'.format(random_state)
     randgen = check_random_state(random_state)
-    sess_ix = randgen.randint(2) + 1
-    results = list()
+    results_ = {'hgl': {'score': [], 'alpha': [], 'h': []},
+                'gl': {'score': [], 'alpha': []}}
+    results = {'LW': results_, 'emp_cov': results_}
     comp_opt_params = mem.cache(compute_optimal_params)
+    if not hasattr(subject_dir, '__iter__'):
+        subject_dir = [subject_dir]
+#   res1 = Parallel(n_jobs=6)(delayed(comp_opt_params)(
+#       sd, method='hgl', htree=TREE) for sd in subject_dir)
     try:
-        res = comp_opt_params(subject_dir, method='hgl', sess_ix=sess_ix,
-                              htree=TREE)
-        print res
-        raise Exception
-        results.append({'method': 'hgl',
-                        'cov': 'empirical',
-                        'score': res[1][-1],
-                        'alpha': res[0],
-                        'h': res[2]})
-
-        res = comp_opt_params(subject_dir, method='hgl', sess_ix=sess_ix,
-                              htree=TREE,
-                              base_estimator=LedoitWolf(assume_centered=True))
-        results.append({'method': 'hgl',
-                        'cov': 'LedoitWolf',
-                        'score': res[1][-1],
-                        'alpha': res[0],
-                        'h': res[2]})
-
-        res = comp_opt_params(subject_dir, method='gl', sess_ix=sess_ix)
-        results.append({'method': 'gl',
-                        'cov': 'empirical',
-                        'score': res[1][-1],
-                        'alpha': res[0]})
-
-        res = comp_opt_params(subject_dir, method='gl', sess_ix=sess_ix,
-                              base_estimator=LedoitWolf(assume_centered=True))
-        results.append({'method': 'gl',
-                        'cov': 'LedoitWolf',
-                        'score': res[1][-1],
-                        'alpha': res[0]})
-        return results
+        res = comp_opt_params(subject_dir[0], method='hgl',
+                            random_state=random_state, htree=TREE)
+        # res = zip(*res1)
+        results['emp_cov']['hgl']['score'] = res[1][-1]
+        results['emp_cov']['hgl']['alpha'] = res[0]
+        results['emp_cov']['hgl']['h'] = res[2]
+        res = comp_opt_params(subject_dir[0], method='hgl',
+                            random_state=random_state, htree=TREE,
+                            base_estimator=LedoitWolf(assume_centered=True))
+        # res = zip(*res1)
+        results['LW']['hgl']['score'] = res[1][-1]
+        results['LW']['hgl']['alpha'] = res[0]
+        results['LW']['hgl']['h'] = res[2]
+    #   res2 = Parallel(n_jobs=6)(delayed(comp_opt_params)(
+    #       sd, method='gl') for sd in subject_dir)
+        res = comp_opt_params(subject_dir[0], method='gl',
+                            random_state=random_state)
+        # res = zip(*res2)
+        results['emp_cov']['gl']['score'] = res[1][-1]
+        results['emp_cov']['gl']['alpha'] = res[0]
+        res = comp_opt_params(subject_dir[0], method='gl',
+                            random_state=random_state,
+                            base_estimator=LedoitWolf(assume_centered=True))
+        # res = zip(*res2)
+        results['LW']['gl']['score'] = res[1][-1]
+        results['LW']['gl']['alpha'] = res[0]
     except ValueError:
-        pass
+        return None
+    return results
 
 
-def run_analysis(subject_dirs=subject_dirs, n_jobs=1, random_state=12345):
-    compare_hgl_gl_ = mem.cache(compare_hgl_gl)
-    results = Parallel(n_jobs=n_jobs)(delayed(compare_hgl_gl_)(
-        sd, random_state=random_state) for sd in subject_dirs)
-    results_ = [r for r in results if r is not None]
-    return reduce(operator.add, results_)
+def run_analysis(subject_dirs=subject_dirs):
+    results = Parallel(n_jobs=10)(delayed(compare_hgl_gl)(
+        subject_dir=sd, random_state='subject') for sd in subject_dirs)
+    return results
 
+
+def split_path(p):
+    head, tail = os.path.split(p)
+    p = []
+    p.append(tail)
+    while tail:
+        head, tail = os.path.split(head)
+        p.append(tail)
+    p.reverse()
+    return p
+        
 
 if __name__ == "__main__":
     # Run a first call outside parallel computing, to debug easily
