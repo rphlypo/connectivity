@@ -21,7 +21,7 @@ import covariance_learn as cvl
 from sklearn.covariance import LedoitWolf
 
 from nilearn.decomposition.multi_pca import MultiPCA
-from nilearn.input_data import NiftiMasker, NiftiLabelsMasker
+from nilearn.input_data import NiftiMasker, NiftiLabelsMasker, NiftiMapsMasker
 from nilearn.image import high_variance_confounds
 from nilearn._utils import check_niimg
 from nilearn import masking
@@ -33,6 +33,7 @@ if getuser() == 'rphlypo' and socket.gethostname() != 'drago':
     ROOT_DIR = '/volatile'
 else:
     ROOT_DIR = '/storage'
+
 
 subject_dirs = sorted(glob.glob(
     os.path.join(ROOT_DIR, 'data/HCP/Q2/*/MNINonLinear/Results')))
@@ -57,6 +58,17 @@ def out_brain_confounds(epi_img, mask_img):
     sigs = signal.clean(sigs, detrend=True)
     U, s, V = randomized_svd(sigs, 5, random_state=0)
     return U
+
+
+def makeHOmaps():
+    HOmaps = [
+        '/usr/share/fsl/data/atlases/HarvardOxford/HarvardOxford-cortl-prob-2mm.nii.gz',
+        '/usr/share/fsl/data/atlases/HarvardOxford/HarvardOxford-sub-prob-2mm.nii.gz']
+    HOmaps_ = [nibabel.load(HOmap) for HOmap in HOmaps]
+    map_data = [HOmap.get_data() for HOmap in HOmaps_]
+    map_data = np.concatenate(map_data, axis=-1)
+    map_affine = HOmaps_[0].get_affine()
+    nibabel.save(nibabel.Nifti1Image(map_data, map_affine), 'HOmaps.nii.gz')
 
 
 def subject_pca(subject_dir, n_components=512, smoothing_fwhm=6,
@@ -91,16 +103,27 @@ def get_confounds(subject_dir, files, mask_img='gm_mask.nii'):
 
 
 def get_data(subject_dir, labels_img='labels_level_3.nii.gz',
-             mask_img='gm_mask.nii', smoothing_fwhm=6):
+             mask_img='gm_mask.nii', smoothing_fwhm=6, discrete_labels=True):
     if not os.path.exists(mask_img):
         os.system('python compute_gm_mask.py')
     files = sorted(glob.glob(os.path.join(
         subject_dir, 'rfMRI_REST?_??/rfMRI_REST?_??.nii.gz')))
     confounds = get_confounds(subject_dir, files, mask_img=mask_img)
-    masker = NiftiLabelsMasker(labels_img=labels_img, mask_img=mask_img,
-                               smoothing_fwhm=smoothing_fwhm,
-                               standardize=True, resampling_target='labels',
-                               detrend=True, low_pass=.1, t_r=.7)
+    if labels_img == 'labels_level_3.nii.gz':
+        masker = NiftiLabelsMasker(labels_img=labels_img,
+                                   mask_img=mask_img,
+                                   smoothing_fwhm=smoothing_fwhm,
+                                   standardize=True,
+                                   resampling_target='labels',
+                                   detrend=True, low_pass=.1, t_r=.7)
+    elif labels_img == 'HOmaps.nii.gz':
+        if not os.path.isfile(labels_img):
+            makeHOmaps()
+        masker = NiftiMapsMasker(maps_img=labels_img,
+                                 mask_img=mask_img,
+                                 smoothin_fwhm=smoothing_fwhm,
+                                 resampling_target='maps',
+                                 detrend=True, low_pass=.1, t_r=.7)
 
     subj_data = []
     for (f_ix, f) in enumerate(files):
@@ -115,7 +138,7 @@ def get_data(subject_dir, labels_img='labels_level_3.nii.gz',
 
 ###############################################################################
 if getuser() == 'rphlypo' and socket.gethostname() == 'is151225':
-    mem = Memory(cachedir='/volatile/workspace/tmp/connectivity_joblib')    
+    mem = Memory(cachedir='/volatile/workspace/tmp/connectivity_joblib')
 elif socket.gethostname() == 'drago' and getuser() == 'rphlypo':
     mem = Memory(cachedir='/storage/workspace/rphlypo/hierarchical/joblib')
 else:
@@ -160,7 +183,7 @@ def compute_optimal_params(subject_dir, method='hgl', sess_ix=None,
     get_data_ = mem.cache(get_data)
     subj_data = get_data_(subject_dir)
     if len(subj_data) < 4:
-        raise ValueError('Incomplete data')    
+        raise ValueError('Incomplete data')
     # random session for training
     if sess_ix is None:
         sess_ix = randgen.randint(2) + 1
@@ -236,7 +259,7 @@ def split_path(p):
         p.append(tail)
     p.reverse()
     return p
-        
+
 
 if __name__ == "__main__":
     # Run a first call outside parallel computing, to debug easily
