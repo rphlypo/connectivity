@@ -36,7 +36,8 @@ else:
 
 
 subject_dirs = sorted(glob.glob(
-    os.path.join(ROOT_DIR, 'data/HCP/Q2/*/MNINonLinear/Results')))
+    os.path.join(ROOT_DIR, 'data/HCP/S500-?/' + ('[0-9]' * 6) +
+                 '/MNINonLinear/Results')))
 
 N_JOBS = min(cpu_count() - 4, 36)
 
@@ -62,8 +63,10 @@ def out_brain_confounds(epi_img, mask_img):
 
 def makeHOmaps():
     HOmaps = [
-        '/usr/share/fsl/data/atlases/HarvardOxford/HarvardOxford-cortl-prob-2mm.nii.gz',
-        '/usr/share/fsl/data/atlases/HarvardOxford/HarvardOxford-sub-prob-2mm.nii.gz']
+        '/usr/share/fsl/data/atlases/HarvardOxford/' +
+        'HarvardOxford-cortl-prob-2mm.nii.gz',
+        '/usr/share/fsl/data/atlases/HarvardOxford/' +
+        'HarvardOxford-sub-prob-2mm.nii.gz']
     HOmaps_ = [nibabel.load(HOmap) for HOmap in HOmaps]
     map_data = [HOmap.get_data() for HOmap in HOmaps_]
     map_data = np.concatenate(map_data, axis=-1)
@@ -178,9 +181,10 @@ def do_k_means(data, n_clusters):
 
 
 def compute_optimal_params(subject_dir, method='hgl', sess_ix=None,
-                           random_state=None, **kwargs):
+                           random_state=None, get_data_=None, **kwargs):
     randgen = check_random_state(random_state)
-    get_data_ = mem.cache(get_data)
+    if get_data_ is None:
+        get_data_ = mem.cache(get_data)
     subj_data = get_data_(subject_dir)
     if len(subj_data) < 4:
         raise ValueError('Incomplete data')
@@ -199,11 +203,11 @@ def compute_optimal_params(subject_dir, method='hgl', sess_ix=None,
                          random_state=random_state, tol=1e-3, **kwargs)
 
 
-def compare_hgl_gl(subject_dir=subject_dirs, random_state=None):
+def compare_hgl_gl(subject_dir=subject_dirs, get_data_=None, random_state=None):
     if random_state == 'subject':
         random_state = int(split_path(subject_dir)[-3])
         print 'random_state = {}'.format(random_state)
-    randgen = check_random_state(random_state)
+    # randgen = check_random_state(random_state)
     results_ = {'hgl': {'score': [], 'alpha': [], 'h': []},
                 'gl': {'score': [], 'alpha': []}}
     results = {'LW': results_, 'emp_cov': results_}
@@ -214,14 +218,14 @@ def compare_hgl_gl(subject_dir=subject_dirs, random_state=None):
 #       sd, method='hgl', htree=TREE) for sd in subject_dir)
     try:
         res = comp_opt_params(subject_dir[0], method='hgl',
-                            random_state=random_state, htree=TREE)
+                              random_state=random_state, htree=TREE)
         # res = zip(*res1)
         results['emp_cov']['hgl']['score'] = res[1][-1]
         results['emp_cov']['hgl']['alpha'] = res[0]
         results['emp_cov']['hgl']['h'] = res[2]
         res = comp_opt_params(subject_dir[0], method='hgl',
-                            random_state=random_state, htree=TREE,
-                            base_estimator=LedoitWolf(assume_centered=True))
+                              random_state=random_state, htree=TREE,
+                              base_estimator=LedoitWolf(assume_centered=True))
         # res = zip(*res1)
         results['LW']['hgl']['score'] = res[1][-1]
         results['LW']['hgl']['alpha'] = res[0]
@@ -229,13 +233,13 @@ def compare_hgl_gl(subject_dir=subject_dirs, random_state=None):
     #   res2 = Parallel(n_jobs=6)(delayed(comp_opt_params)(
     #       sd, method='gl') for sd in subject_dir)
         res = comp_opt_params(subject_dir[0], method='gl',
-                            random_state=random_state)
+                              random_state=random_state)
         # res = zip(*res2)
         results['emp_cov']['gl']['score'] = res[1][-1]
         results['emp_cov']['gl']['alpha'] = res[0]
         res = comp_opt_params(subject_dir[0], method='gl',
-                            random_state=random_state,
-                            base_estimator=LedoitWolf(assume_centered=True))
+                              random_state=random_state,
+                              base_estimator=LedoitWolf(assume_centered=True))
         # res = zip(*res2)
         results['LW']['gl']['score'] = res[1][-1]
         results['LW']['gl']['alpha'] = res[0]
@@ -244,9 +248,10 @@ def compare_hgl_gl(subject_dir=subject_dirs, random_state=None):
     return results
 
 
-def run_analysis(subject_dirs=subject_dirs):
+def run_analysis(subject_dirs=subject_dirs, **kwargs):
     results = Parallel(n_jobs=10)(delayed(compare_hgl_gl)(
-        subject_dir=sd, random_state='subject') for sd in subject_dirs)
+        subject_dir=sd, random_state='subject', **kwargs)
+        for sd in subject_dirs)
     return results
 
 
