@@ -103,7 +103,7 @@ def get_confounds(subject_dir, files, mask_img='gm_mask.nii'):
 
 
 def get_data(subject_dir, labels_img='labels_level_3.nii.gz',
-             mask_img='gm_mask.nii', smoothing_fwhm=6, discrete_labels=True):
+             mask_img='gm_mask.nii', smoothing_fwhm=6):
     if not os.path.exists(mask_img):
         os.system('python compute_gm_mask.py')
     files = sorted(glob.glob(os.path.join(
@@ -121,7 +121,7 @@ def get_data(subject_dir, labels_img='labels_level_3.nii.gz',
             makeHOmaps()
         masker = NiftiMapsMasker(maps_img=labels_img,
                                  mask_img=mask_img,
-                                 smoothin_fwhm=smoothing_fwhm,
+                                 smoothing_fwhm=smoothing_fwhm,
                                  resampling_target='maps',
                                  detrend=True, low_pass=.1, t_r=.7)
 
