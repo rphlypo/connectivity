@@ -1,5 +1,6 @@
 import collections
 from sklearn.cluster import KMeans
+from sklearn.utils import check_random_state
 import numpy as np
 
 
@@ -103,15 +104,16 @@ class HTree(object):
         """
         self.root = root
         self.tree_list = tree_list
+        self._fit()
 
-    def create(self):
+    def _fit(self):
         """ scan a nested list to form a tree
         """
         if (isinstance(self.tree_list, collections.Iterable)
                 and len(self.tree_list) > 1):
             root_ = Node(parent=self.root,
                          children=[])
-            child_nodes = [HTree(t, root=root_).create().root_
+            child_nodes = [HTree(t, root=root_)._fit().root_
                            for t in self.tree_list]
             root_.add_children(child_nodes)
             self.root_ = root_
@@ -130,6 +132,12 @@ class HTree(object):
         return self
 
     def get_nodes(self):
+        """ useful method to get the entire list of nodes and connections
+
+        This method extracts the nodes with their relationships, one can then
+        explore the tree by starting to interrogate the node root_ for its
+        children, etc.
+        """
         self._update()
         nodes = []
         for (node, _) in _get_node_list(self.root_):
@@ -164,22 +172,28 @@ class HierarchicalKMeans(KMeans):
         self.labels_ = self.kmeans.fit(X)
 
 
-def construct_tree(arity=8, depth=3):
+def construct_tree(arity=8, depth=3, obj=True, rng=None):
     while True:
         try:
-            tree = HTree(hierarchical_tree(arity=arity, depth=depth)).create()
+            rng = check_random_state(rng)
+            nodelist = hierarchical_tree(arity=arity, depth=depth, rng=rng)
+            tree = HTree(nodelist)
             # randomness could result in twice the same ID, repeat if needed
             if len(np.unique(tree.root_.value_)) == len(tree.root_.value_):
                 raise StopIteration
         except StopIteration:
-            return tree
+            if obj:
+                return tree
+            else:
+                return nodelist
 
 
-def hierarchical_tree(arity=8, depth=3):
+def hierarchical_tree(arity=8, depth=3, rng=None):
+    rng = check_random_state(rng)
     if depth == 0:
         # We can attribute a random label / ID. This may clash, although very
         # improbable. Fingers crossed !
-        return np.random.randint(0, 2 ** 31 - 1)
+        return rng.randint(0, 2 ** 31 - 1)
     else:
-        return [hierarchical_tree(arity=arity, depth=depth - 1)
+        return [hierarchical_tree(arity=arity, depth=depth - 1, rng=rng)
                 for _ in range(arity)]

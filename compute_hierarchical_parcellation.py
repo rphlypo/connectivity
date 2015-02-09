@@ -10,7 +10,6 @@ from getpass import getuser
 
 import numpy as np
 from joblib import Memory, Parallel, delayed
-import scipy.linalg
 
 from sklearn.utils.extmath import randomized_svd
 from sklearn.cluster import MiniBatchKMeans, KMeans
@@ -41,7 +40,7 @@ subject_dirs = sorted(glob.glob(
 
 N_JOBS = min(cpu_count() - 4, 36)
 
-TREE = htree.construct_tree()
+TREE = htree.construct_tree(obj=False, rng=0)
 
 
 def out_brain_confounds(epi_img, mask_img):
@@ -196,14 +195,15 @@ def compute_optimal_params(subject_dir, method='hgl', sess_ix=None,
     # complementary session
     Y = np.concatenate([d["data"] for d in subj_data
                         if d["session"] == 3 - sess_ix], axis=0)
-    Theta = scipy.linalg.inv(Y.T.dot(Y) / Y.shape[0])
-    return cvl.cross_val(X, method=method, alpha_tol=1e-2, n_iter=1,
+    Theta = Y.T.dot(Y) / Y.shape[0]
+    return cvl.cross_val(X, method=method, n_iter=1,
                          optim_h=True, train_size=.99, test_size=0.01,
-                         model_prec=Theta, n_jobs=min({N_JOBS, 10}),
+                         model_cov=Theta, n_jobs=min({N_JOBS, 10}),
                          random_state=random_state, tol=1e-3, **kwargs)
 
 
-def compare_hgl_gl(subject_dir=subject_dirs, get_data_=None, random_state=None):
+def compare_hgl_gl(subject_dir=subject_dirs, random_state=None,
+                   methods=['EMP']):
     if random_state == 'subject':
         random_state = int(split_path(subject_dir)[-3])
         print 'random_state = {}'.format(random_state)
@@ -214,35 +214,37 @@ def compare_hgl_gl(subject_dir=subject_dirs, get_data_=None, random_state=None):
     comp_opt_params = mem.cache(compute_optimal_params)
     if not hasattr(subject_dir, '__iter__'):
         subject_dir = [subject_dir]
-#   res1 = Parallel(n_jobs=6)(delayed(comp_opt_params)(
-#       sd, method='hgl', htree=TREE) for sd in subject_dir)
     try:
-        res = comp_opt_params(subject_dir[0], method='hgl',
-                              random_state=random_state, htree=TREE)
-        # res = zip(*res1)
-        results['emp_cov']['hgl']['score'] = res[1][-1]
-        results['emp_cov']['hgl']['alpha'] = res[0]
-        results['emp_cov']['hgl']['h'] = res[2]
-        res = comp_opt_params(subject_dir[0], method='hgl',
-                              random_state=random_state, htree=TREE,
-                              base_estimator=LedoitWolf(assume_centered=True))
-        # res = zip(*res1)
-        results['LW']['hgl']['score'] = res[1][-1]
-        results['LW']['hgl']['alpha'] = res[0]
-        results['LW']['hgl']['h'] = res[2]
-    #   res2 = Parallel(n_jobs=6)(delayed(comp_opt_params)(
-    #       sd, method='gl') for sd in subject_dir)
-        res = comp_opt_params(subject_dir[0], method='gl',
-                              random_state=random_state)
-        # res = zip(*res2)
-        results['emp_cov']['gl']['score'] = res[1][-1]
-        results['emp_cov']['gl']['alpha'] = res[0]
-        res = comp_opt_params(subject_dir[0], method='gl',
-                              random_state=random_state,
-                              base_estimator=LedoitWolf(assume_centered=True))
-        # res = zip(*res2)
-        results['LW']['gl']['score'] = res[1][-1]
-        results['LW']['gl']['alpha'] = res[0]
+        if 'EMP' in methods:
+            res = comp_opt_params(subject_dir[0], method='hgl',
+                                  random_state=random_state, htree=TREE,
+                                  alpha_tol=1e-1, h_tol=1e-1)
+            results['emp_cov']['hgl']['score'] = res[1][-1]
+            results['emp_cov']['hgl']['alpha'] = res[0]
+            results['emp_cov']['hgl']['h'] = res[2]
+
+            res = comp_opt_params(subject_dir[0], method='gl',
+                                  random_state=random_state,
+                                  alpha_tol=1e-1, h_tol=1e-1)
+            results['emp_cov']['gl']['score'] = res[1][-1]
+            results['emp_cov']['gl']['alpha'] = res[0]
+        if 'LW' in methods:
+            res = comp_opt_params(subject_dir[0], method='hgl',
+                                  random_state=random_state, htree=TREE,
+                                  base_estimator=LedoitWolf(
+                                      assume_centered=True),
+                                  alpha_tol=1e-1, h_tol=1e-1)
+            results['LW']['hgl']['score'] = res[1][-1]
+            results['LW']['hgl']['alpha'] = res[0]
+            results['LW']['hgl']['h'] = res[2]
+
+            res = comp_opt_params(subject_dir[0], method='gl',
+                                  random_state=random_state,
+                                  base_estimator=LedoitWolf(
+                                      assume_centered=True),
+                                  alpha_tol=1e-1, h_tol=1e-1)
+            results['LW']['gl']['score'] = res[1][-1]
+            results['LW']['gl']['alpha'] = res[0]
     except ValueError:
         return None
     return results

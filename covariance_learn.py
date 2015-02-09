@@ -296,7 +296,7 @@ class HierarchicalGraphLasso(GraphLasso):
         S = self._X_to_cov(X)
 
         if hasattr(self.htree, '__iter__'):
-            self.htree_ = HTree(self.htree).create()
+            self.htree_ = HTree(self.htree)
             # {htree}._update() is ok for small trees, otherwise use on-the-fly
             # evaluation with {node}._get_node_values() at each node call
         elif isinstance(self.htree, HTree):
@@ -587,8 +587,8 @@ def _cov_2_corr(covariance):
     return (correlation + correlation.T) / 2.
 
 
-def cross_val(X, y=None, method='gl', alpha_tol=1e-2,
-              n_iter=100, train_size=.1, test_size=.5,
+def cross_val(X, y=None, method='gl', alpha_tol=1e-2, h_tol=.1,
+              n_iter=10, train_size=.1, test_size=.5,
               model_prec=None, model_cov=None,
               verbose=0, n_jobs=1,
               random_state=None, ips_flag=False,
@@ -617,7 +617,7 @@ def cross_val(X, y=None, method='gl', alpha_tol=1e-2,
         cov_learner = HierarchicalGraphLasso
         tree = kwargs['htree']
         if hasattr(tree, '__iter__'):
-            tree = HTree(tree).create()
+            tree = HTree(tree)
         max_level = max([lev for (_, lev) in tree.root_.get_descendants()])
     elif method == 'ips':
         cov_learner = IPS
@@ -625,7 +625,7 @@ def cross_val(X, y=None, method='gl', alpha_tol=1e-2,
         CV_norm = score_norm
     # alpha_max ?
     alphas = np.linspace(0., 1., 5)
-    score = np.zeros((5,))
+    score = -np.ones((5,)) * np.inf
     score_ = list()
 #   for (ix, alpha) in enumerate(alphas):
 #       cov_learner_ = cov_learner(alpha=alpha, score_norm=CV_norm,
@@ -656,7 +656,7 @@ def cross_val(X, y=None, method='gl', alpha_tol=1e-2,
                         for train_ix, test_ix in shuffle_split)
                     score[ix] = np.mean(np.array(res_))
                 else:
-                    scoreh = np.zeros((5,))
+                    scoreh = -np.ones((5,)) * np.inf
                     hs = np.linspace(0, 1., 5)
                     first_run_h = True
                     while True:
@@ -682,10 +682,10 @@ def cross_val(X, y=None, method='gl', alpha_tol=1e-2,
                             scoreh[0] = scoreh[max_ixh - 1]
                             scoreh[4] = scoreh[max_ixh + 1]
                             scoreh[2] = scoreh[max_ixh]
-                            scoreh[1] = scoreh[3] = 0.
+                            scoreh[1] = scoreh[3] = -np.inf
                             hs = np.linspace(hs[max_ixh - 1],
                                              hs[max_ixh + 1], 5)
-                            if hs[4] - hs[0] <= .1:
+                            if hs[4] - hs[0] <= h_tol:
                                 raise StopIteration
                         except StopIteration:
                             score[ix] = np.max(scoreh)
@@ -697,7 +697,7 @@ def cross_val(X, y=None, method='gl', alpha_tol=1e-2,
             score[0] = score[max_ix - 1]
             score[4] = score[max_ix + 1]
             score[2] = score[max_ix]
-            score[1] = score[3] = 0.
+            score[1] = score[3] = -np.inf
             alphas = np.linspace(alphas[max_ix - 1], alphas[max_ix + 1], 5)
             score_.append(np.max(score))
             alpha_opt = alphas[np.argmax(score)]
@@ -749,6 +749,7 @@ def _eval_cov_learner(X, train_ix, test_ix, model_prec, model_cov,
     else:
         eigvals, eigvecs = linalg.eigh(model_prec)
         X_test = np.diag(np.sqrt(eigvals)).dot(eigvecs.T)
+    # learn a sparse covariance model
     cov_learner_ = clone(cov_learner)
     cov_learner_.__setattr__('alpha', cov_learner_.alpha * alpha_max_)
     if not ips_flag:
@@ -758,7 +759,8 @@ def _eval_cov_learner(X, train_ix, test_ix, model_prec, model_cov,
         aux_prec = cov_learner_.fit(X_train).auxiliary_prec_
         mask = np.abs(aux_prec) > machine_eps(0.)
         ips = IPS(support=mask, score_norm=cov_learner_.score_norm)
-        score = ips.fit(X_train).score(X_test)
+        # on the mask, fit and score the testing dataset in the likelihood sense
+        score = ips.fit(X_test).score(X_test)
     else:
         raise ValueError('ell0 scoring in CV_loop and IPS are incompatible')
 

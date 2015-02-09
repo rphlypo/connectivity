@@ -26,16 +26,17 @@ def cross_val(subject_dir, labels_img="labels_level_3.nii.gz",
               random_state=None, **kwargs):
     print "processing {} with atlas {}".format(subject_dir, labels_img)
     # randgen = check_random_state(random_state)
-    get_data_ = mem.cache(get_data)
-    results = chp.run_analysis(subject_dirs=subject_dirs, get_data_=get_data_)
+    # get_data_ = mem.cache(get_data)
+    results = chp.run_analysis(subject_dirs=subject_dirs) #, get_data_=get_data_)
     # subj_data = get_data_(subject_dir, labels_img=labels_img)
     return results
 
 
 if __name__ == "__main__":
+    cv = mem.cache(cross_val)
     res = {'hier': [], 'HO': []}
-    res['hier'] = Parallel(n_jobs=20)(delayed(cross_val)(sd)
-                                      for sd in subject_dirs)
-    res['HO'] = Parallel(n_jobs=20)(delayed(cross_val)(
-                                    sd, labels_img='HOmaps.nii.gz')
-                                    for sd in subject_dirs)
+    res['hier'] = Parallel(n_jobs=N_JOBS)(delayed(cv)(sd)
+                                          for sd in subject_dirs)
+    res['HO'] = Parallel(n_jobs=N_JOBS)(delayed(cv)(
+                                        sd, labels_img='HOmaps.nii.gz')
+                                        for sd in subject_dirs)
