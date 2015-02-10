@@ -8,14 +8,14 @@ import numbers
 
 from scipy.ndimage.measurements import mean as label_mean
 from scipy.special import gamma as gamma_func
-
+from scipy import linalg
 
 from htree import HTree
-from scipy import linalg
 from sklearn.base import clone
 from sklearn.covariance.empirical_covariance_ import EmpiricalCovariance
 from functools import partial
 
+from joblib import Parallel, delayed
 
 logger = logging.getLogger(__name__)
 console = logging.StreamHandler()
@@ -24,6 +24,7 @@ fast_logdet = sklearn.utils.extmath.fast_logdet
 
 
 class GraphLasso(EmpiricalCovariance):
+
     """ the estimator class for GraphLasso based on ADMM
 
     arguments
@@ -51,6 +52,7 @@ class GraphLasso(EmpiricalCovariance):
         rho: positive scalar
             ressemblance enforcing penalty between split variables
     """
+
     def __init__(self, alpha, tol=1e-6, max_iter=1e4, verbose=0,
                  base_estimator=EmpiricalCovariance(assume_centered=True),
                  scale_2_corr=True, rho=1., mu=None,
@@ -221,8 +223,10 @@ class GraphLasso(EmpiricalCovariance):
 
 
 class IPS(GraphLasso):
+
     """ the estimator class for GraphLasso based on ADMM
     """
+
     def __init__(self, support, tol=1e-6, max_iter=100, verbose=0,
                  base_estimator=EmpiricalCovariance(assume_centered=True),
                  scale_2_corr=True, rho=1., mu=None,
@@ -256,6 +260,7 @@ class IPS(GraphLasso):
 
 
 class HierarchicalGraphLasso(GraphLasso):
+
     def __init__(self, htree, alpha, tol=1e-6, max_iter=1e4, verbose=0,
                  base_estimator=EmpiricalCovariance(assume_centered=True),
                  scale_2_corr=True, rho=1., mu=None,
@@ -587,111 +592,73 @@ def _cov_2_corr(covariance):
     return (correlation + correlation.T) / 2.
 
 
-def cross_val(X, y=None, method='gl', alpha_tol=1e-2, h_tol=.1,
-              n_iter=10, train_size=.1, test_size=.5,
-              model_prec=None, model_cov=None,
-              verbose=0, n_jobs=1,
-              random_state=None, ips_flag=False,
-              score_norm="KL", CV_norm=None,
-              optim_h=False, **kwargs):
-    from sklearn import cross_validation
-    from joblib import Parallel, delayed
+def cross_val(X, y=None, X_test=None, y_test=None, method='gl', alpha_tol=0.01,
+              verbose=0, n_jobs=1, ips_flag=False, htree=None, score_norm="KL",
+              h=None, **kwargs):
+    """
+    if one has a theoretical optimal covariance or precision matrix
+    rather than testing data, one may use the next trick
+
+        Suppose the theoretical optimum is Theta
+
+        >>> eig_vals, eig_vecs = scipy.linalg.eig(Theta)
+        >>> X_test = np.sqrt(eig_vals[:, np.newaxis]) * eigvecs.T
+
+        One sees that X_test.T.dot(X_test) = Theta, if needed one
+        could scale
+
+        >>> X_test *= sqrt(p)
+
+        for which X_test.T.dot(X_test) / p = Theta
+
+        use the function cov_2_data
+    """
     # logging.ERROR is at level 40
     # logging.WARNING is at level 30, everything below is low priority
     # logging.INFO is at level 20, verbose 10
     # logging.DEBUG is at level 10, verbose 20
     logger.setLevel(logging.WARNING - verbose)
 
-    if y is None:
-        shuffle_split = cross_validation.ShuffleSplit(
-            X.shape[0], n_iter=n_iter, test_size=test_size,
-            train_size=train_size, random_state=random_state)
-    else:
-        shuffle_split = cross_validation.StratifiedShuffleSplit(
-            y, n_iter=n_iter, test_size=test_size, train_size=train_size,
-            random_state=random_state)
+    # kwargs contains n_test, n_train, random_state, n_iter
+    shuffle_split = get_indices(X, y, X_test, y_test, **kwargs)
 
+    # selecting the method for learning the covariance method
     if method == 'gl':
         cov_learner = GraphLasso
     elif method == 'hgl':
         cov_learner = HierarchicalGraphLasso
-        tree = kwargs['htree']
-        if hasattr(tree, '__iter__'):
-            tree = HTree(tree)
-        max_level = max([lev for (_, lev) in tree.root_.get_descendants()])
     elif method == 'ips':
         cov_learner = IPS
-    if CV_norm is None:
-        CV_norm = score_norm
-    # alpha_max ?
+
+    # initialisation
     alphas = np.linspace(0., 1., 5)
-    score = -np.ones((5,)) * np.inf
+    h_ = np.zeros((5,))
+    score = -np.ones((5,)) * np.inf  # scores at -infinity, lower bound
     score_ = list()
-#   for (ix, alpha) in enumerate(alphas):
-#       cov_learner_ = cov_learner(alpha=alpha, score_norm=CV_norm,
-#                                  **kwargs)
-#       res_ = Parallel(n_jobs=n_jobs)(delayed(_eval_cov_learner)(
-#           X, train_ix, test_ix, model_prec, cov_learner_, ips_flag)
-#           for train_ix, test_ix in bs)
-#       score[ix] = np.mean(np.array(res_))
-#   score_.append(score[2])
-    first_run_alpha = True
     while True:
         try:
-            print "refining alpha grid to interval [{}, {}]".format(
-                alphas[0], alphas[-1])
             logger.info("refining alpha grid to interval [{}, {}]".format(
                 alphas[0], alphas[-1]))
             for (ix, alpha) in enumerate(alphas):
-                if not first_run_alpha and ix in [0, 2, 4]:
-                    print "alpha[{}] = {}, already computed".format(ix, alpha)
+                if ix in [0, 2, 4] and not np.isinf(score[ix]):
+                    logger.info("alpha[{}] = {}, already computed".format(
+                        ix, alpha))
                     continue
-                print "computing for alpha[{}] = {}".format(ix, alpha)
-                if method != 'hgl' or not optim_h:
-                    cov_learner_ = cov_learner(alpha=alpha, score_norm=CV_norm,
+                logger.info("computing for alpha[{}] = {}".format(ix, alpha))
+                if method != 'hgl' or h is not None:
+                    cov_learner_ = cov_learner(alpha=alpha,
+                                               score_norm=score_norm,
                                                **kwargs)
                     res_ = Parallel(n_jobs=n_jobs)(delayed(_eval_cov_learner)(
-                        X, train_ix, test_ix, model_prec, model_cov,
-                        cov_learner_, ips_flag)
+                        X, X_test, train_ix, test_ix, cov_learner_, ips_flag)
                         for train_ix, test_ix in shuffle_split)
                     score[ix] = np.mean(np.array(res_))
                 else:
-                    scoreh = -np.ones((5,)) * np.inf
-                    hs = np.linspace(0, 1., 5)
-                    first_run_h = True
-                    while True:
-                        try:
-                            print "\trefining h-grid to " +\
-                                "interval [{}, {}]".format(
-                                    hs[0], hs[-1])
-                            for (ixh, h) in enumerate(hs):
-                                if not first_run_h and ixh in [0, 2, 4]:
-                                    continue
-                                cov_learner_h = cov_learner(
-                                    alpha=alpha, score_norm=CV_norm,
-                                    alpha_func=partial(_alpha_func, h=h,
-                                                       max_level=max_level),
-                                    **kwargs)
-                                res_h = Parallel(n_jobs=n_jobs)(
-                                    delayed(_eval_cov_learner)(
-                                        X, train_ix, test_ix, model_prec,
-                                        model_cov, cov_learner_h, ips_flag)
-                                    for train_ix, test_ix in shuffle_split)
-                                scoreh[ixh] = np.mean(np.array(res_h))
-                            max_ixh = min(max(np.argmax(scoreh), 1), 3)
-                            scoreh[0] = scoreh[max_ixh - 1]
-                            scoreh[4] = scoreh[max_ixh + 1]
-                            scoreh[2] = scoreh[max_ixh]
-                            scoreh[1] = scoreh[3] = -np.inf
-                            hs = np.linspace(hs[max_ixh - 1],
-                                             hs[max_ixh + 1], 5)
-                            if hs[4] - hs[0] <= h_tol:
-                                raise StopIteration
-                        except StopIteration:
-                            score[ix] = np.max(scoreh)
-                            h_opt = hs[np.argmax(scoreh)]
-                            break
-                        first_run_h = False
+                    h_opt, score_h = _compute_hopt(
+                        alpha, score_norm, X, X_test, shuffle_split, ips_flag,
+                        htree, n_jobs=n_jobs, **kwargs)
+                    h_[ix] = h_opt
+                    score[ix] = score_h
 
             max_ix = min(max(np.argmax(score), 1), 3)
             score[0] = score[max_ix - 1]
@@ -701,54 +668,103 @@ def cross_val(X, y=None, method='gl', alpha_tol=1e-2, h_tol=.1,
             alphas = np.linspace(alphas[max_ix - 1], alphas[max_ix + 1], 5)
             score_.append(np.max(score))
             alpha_opt = alphas[np.argmax(score)]
+            h_opt = h[np.argmax(score)]
             if alphas[4] - alphas[0] <= alpha_tol:
                 raise StopIteration
         except StopIteration:
-            if score_norm == CV_norm:
-                if method != 'hgl' or not optim_h:
-                    return alpha_opt, score_
-                else:
-                    return alpha_opt, score_, h_opt
+            if method != 'hgl' or h is not None:
+                return alpha_opt, score_
             else:
-                if method != 'hgl' or not optim_h:
-                    cov_learner_ = cov_learner(alpha=alpha_opt,
-                                               score_norm=score_norm,
-                                               **kwargs)
-                    res_ = Parallel(n_jobs=n_jobs)(
-                        delayed(_eval_cov_learner)(
-                            X, train_ix, test_ix, model_prec, model_cov,
-                            cov_learner_, ips_flag)
-                        for train_ix, test_ix in shuffle_split)
-                    score_star = np.mean(np.array(res_))
-                    return alpha_opt, score_, score_star
-                else:
-                    cov_learner_ = cov_learner(
-                        alpha=alpha_opt, score_norm=score_norm,
-                        alpha_func=partial(_alpha_func, h=h_opt,
-                                           max_level=max_level),
-                        **kwargs)
-                    res_ = Parallel(n_jobs=n_jobs)(
-                        delayed(_eval_cov_learner)(
-                            X, train_ix, test_ix, model_prec, model_cov,
-                            cov_learner_, ips_flag)
-                        for train_ix, test_ix in shuffle_split)
-                    score_star = np.mean(np.array(res_))
-                    return alpha_opt, score_, h_opt, score_star
-        first_run_alpha = False
+                return alpha_opt, score_, h_opt
 
 
-def _eval_cov_learner(X, train_ix, test_ix, model_prec, model_cov,
-                      cov_learner, ips_flag=True):
-    X_train = X[train_ix, ...]
-    alpha_max_ = alpha_max(X_train)
-    if model_prec is None and model_cov is None:
-        X_test = X[test_ix, ...]
-    elif model_cov is None:
-        eigvals, eigvecs = linalg.eigh(model_prec)
-        X_test = np.diag(1. / np.sqrt(eigvals)).dot(eigvecs.T)
+def _compute_hopt(alpha, score_norm, X, X_test, shuffle_split, htree,
+                  h_tol=0.01, n_jobs=1, ips_flag=True, **kwargs):
+    # init
+    scoreh = -np.ones((5,)) * np.inf
+    hs = np.linspace(0., 1., 5)
+    if hasattr(htree, '__iter__'):
+        htree = HTree(htree)
+    max_level = max([lev for (_, lev) in htree.root_.get_descendants()])
+    while True:
+        try:
+            logger.info("\trefining h-grid to interval " +
+                        "[{}, {}]".format(hs[0], hs[-1]))
+            for (ixh, h) in enumerate(hs):
+                if ixh in [0, 2, 4] and not np.isinf(scoreh[ixh]):
+                    continue
+                cov_learner_h = HierarchicalGraphLasso(
+                    alpha=alpha, score_norm=score_norm,
+                    alpha_func=partial(_alpha_func, h=h,
+                                       max_level=max_level),
+                    **kwargs)
+                res_h = Parallel(n_jobs=n_jobs)(
+                    delayed(_eval_cov_learner)(
+                        X, X_test, train_ix, test_ix,
+                        cov_learner_h, ips_flag)
+                    for train_ix, test_ix in shuffle_split)
+                scoreh[ixh] = np.mean(np.array(res_h))
+            max_ixh = min(max(np.argmax(scoreh), 1), 3)
+            scoreh[0] = scoreh[max_ixh - 1]
+            scoreh[4] = scoreh[max_ixh + 1]
+            scoreh[2] = scoreh[max_ixh]
+            scoreh[1] = scoreh[3] = -np.inf
+            hs = np.linspace(hs[max_ixh - 1],
+                             hs[max_ixh + 1], 5)
+            if hs[4] - hs[0] <= h_tol:
+                raise StopIteration
+        except StopIteration:
+            h_opt = hs[np.argmax(scoreh)]
+            return h_opt, np.max(scoreh)
+
+
+def get_indices(X, y, X_test, y_test, n_iter=10,
+                train_size=.9, test_size=.1,
+                random_state=None):
+    """ get the shuffle split indices for training and testing
+    """
+    from sklearn import cross_validation
+    # depending on the presence of the X_test variable, train and test
+    # should either be taken in X only, or in X and X_test, respectively.
+    if X_test is None:
+        test_size_ = test_size
+        train_size_ = train_size
+        # no unnecessary data copy here --> by data reference !
+        X_test = X
     else:
-        eigvals, eigvecs = linalg.eigh(model_prec)
-        X_test = np.diag(np.sqrt(eigvals)).dot(eigvecs.T)
+        test_size_ = None
+        train_size_ = None
+    # using stratified shuffle split if y is given, shuffle split otherwise
+    # training data
+    if y is not None:
+        shuffle_split = cross_validation.StratifiedShuffleSplit(
+            y, n_iter=n_iter, train_size=train_size, test_size=test_size_,
+            random_state=random_state)
+    else:
+        shuffle_split = cross_validation.ShuffleSplit(
+            X.shape[0], n_iter=n_iter, train_size=train_size,
+            test_size=test_size_, random_state=random_state)
+    # testing data
+    if y_test is not None and test_size_ is not None:
+        shuffle_split_test = cross_validation.StratifiedShuffleSplit(
+            y_test, n_iter=n_iter, test_size=test_size, train_size=train_size_,
+            random_state=random_state)
+    elif test_size_ is not None:
+        shuffle_split_test = cross_validation.ShuffleSplit(
+            X_test.shape[0], n_iter=n_iter, test_size=test_size,
+            train_size=train_size_, random_state=random_state)
+
+    # allow for a unique call to retrieve train and test indices
+    if test_size_ is not None:
+        shuffle_split = zip(*[(train[0], test[1])
+                              for train, test in
+                              zip(shuffle_split, shuffle_split_test)])
+
+
+def _eval_cov_learner(X, X_test, train_ix, test_ix, cov_learner, ips_flag=True):
+    X_train = X[train_ix, ...]
+    X_test = X_test[test_ix, ...]
+    alpha_max_ = alpha_max(X_train)
     # learn a sparse covariance model
     cov_learner_ = clone(cov_learner)
     cov_learner_.__setattr__('alpha', cov_learner_.alpha * alpha_max_)
@@ -827,6 +843,15 @@ def _check_2D_array(X):
         raise ValueError("X must be a 'numpy.ndarray' object")
     if X.ndim != 2:
         raise ValueError('X must be a 2-dimensional array')
+
+
+def cov_2_data(Theta, precision=False, scaled=True):
+    eig_vals, eig_vecs = linalg.eig(Theta)
+    if precision:
+        eig_vals = 1. / eig_vals
+    if scaled:
+        eig_vals *= eig_vals.size
+    return (eig_vecs * np.sqrt(eig_vals)).T
 
 
 def machine_eps(f):
