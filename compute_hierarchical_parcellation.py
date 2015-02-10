@@ -11,6 +11,8 @@ from getpass import getuser
 import numpy as np
 from joblib import Memory, Parallel, delayed
 
+import itertools
+
 from sklearn.utils.extmath import randomized_svd
 from sklearn.cluster import MiniBatchKMeans, KMeans
 from sklearn.utils import check_random_state
@@ -18,6 +20,7 @@ import nibabel
 import covariance_learn as cvl
 
 from sklearn.covariance import LedoitWolf
+from sklearn.covariance import EmpiricalCovariance
 
 from nilearn.decomposition.multi_pca import MultiPCA
 from nilearn.input_data import NiftiMasker, NiftiLabelsMasker, NiftiMapsMasker
@@ -181,10 +184,45 @@ def do_k_means(data, n_clusters):
 
 def compute_optimal_params(subject_dir, method='hgl', sess_ix=None,
                            random_state=None, get_data_=None, **kwargs):
+    """ compute the optimal cross-validated parameters alpha and h
+
+
+    This is simply a wrapper for the cross_val method of covariance_learn.py
+
+    Arguments:
+    ----------
+    subject_dir : string
+        subject directory where the data resides
+
+    method      : string
+        the method used, either hierarchial ('hgl') or plain ('gl')
+        graphical lasso
+
+    sess_ix     : integer (1 or 2)
+        if a specific session is envisaged, one may specify it here
+        the complementary session is used for validation
+
+    random_state : random state
+        if perfect reproducibility is required (for instance when caching)
+        then a random state can be specified here
+
+    get_data_   : function reference
+        this could be a cached function, should return a matrix that is
+        compatible with [time x ROI]
+
+    all keyword arguments are simply a pass-through to the cross_val
+    method of covariance_learn.py
+
+    Returns
+    """
     randgen = check_random_state(random_state)
+    # cache the function get_data_ so that no recomputation is required
     if get_data_ is None:
         get_data_ = mem.cache(get_data)
     subj_data = get_data_(subject_dir)
+
+    # if we do not have two session, each with two scan_modes,
+    # something must have gone wrong !
     if len(subj_data) < 4:
         raise ValueError('Incomplete data')
     # random session for training
@@ -192,61 +230,81 @@ def compute_optimal_params(subject_dir, method='hgl', sess_ix=None,
         sess_ix = randgen.randint(2) + 1
     X = np.concatenate([d["data"] for d in subj_data
                         if d["session"] == sess_ix], axis=0)
+    xlen = [d["data"].shape[0] for d in subj_data if d["session"] == sess_ix]
+    x_samplinglabel = np.zeros((xlen[0] + xlen[1],), dtype=np.int)
+    x_samplinglabel[xlen[0]:] += 1
     # complementary session
     Y = np.concatenate([d["data"] for d in subj_data
                         if d["session"] == 3 - sess_ix], axis=0)
-    Theta = Y.T.dot(Y) / Y.shape[0]
-    return cvl.cross_val(X, method=method, n_iter=1,
+    ylen = [d["data"].shape[0] for d in subj_data
+            if d["session"] == 3 - sess_ix]
+    y_samplinglabel = np.zeros((ylen[0] + ylen[1],), dtype=np.int)
+    y_samplinglabel[xlen[0]:] += 1
+    return cvl.cross_val(X, y=Y, method=method, n_iter=1,
                          optim_h=True, train_size=.99, test_size=0.01,
-                         model_cov=Theta, n_jobs=min({N_JOBS, 10}),
-                         random_state=random_state, tol=1e-3, **kwargs)
+                         n_jobs=min({N_JOBS, 10}), random_state=random_state,
+                         tol=1e-3, **kwargs)
 
 
-def compare_hgl_gl(subject_dir=subject_dirs, random_state=None,
-                   methods=['EMP']):
+def compare_hgl_gl(subject_dir, random_state=None,
+                   estimators=['EMP'], methods=['hgl', 'gl'],
+                   alpha_tol=1e-1, h_tol=1e-1):
+    """ compare results from hierarchical and plain graphical lasso
+
+    using a given base_estimator for the covariance (empirical or
+    Ledoit-Wolf) the goal is to estimate the optimal alpha and h
+    parameters by cross-validation
+
+    Arguments:
+    ----------
+    subject_dir : string
+        subject directory where the data resides
+
+    random_state : random state or None
+        if the random state needs to be state fixed for
+        reproducibility of the results, then one may use the option
+        'subject' here
+
+    estimators : list of strings
+        available methods are 'EMP' and 'LW' for empirical covariance
+        and Ledoit-Wolf shrinkage, respectively
+
+    Returns:
+    --------
+    results : dictionary with entries [estimator][method][value]
+
+    This function passes on parameters to compute_optimal_parameters,
+    its main goal is to cache this function and prepare the parameters
+    for the different settings (estimators and methods)
+    """
     if random_state == 'subject':
         random_state = int(split_path(subject_dir)[-3])
         print 'random_state = {}'.format(random_state)
     # randgen = check_random_state(random_state)
-    results_ = {'hgl': {'score': [], 'alpha': [], 'h': []},
-                'gl': {'score': [], 'alpha': []}}
+    results_ = {'hgl': {'score': None, 'alpha': None, 'h': None},
+                'gl': {'score': None, 'alpha': None}}
     results = {'LW': results_, 'emp_cov': results_}
     comp_opt_params = mem.cache(compute_optimal_params)
     if not hasattr(subject_dir, '__iter__'):
         subject_dir = [subject_dir]
-    try:
-        if 'EMP' in methods:
-            res = comp_opt_params(subject_dir[0], method='hgl',
+    for estimator, method in itertools.product(estimators, methods):
+        if estimator == 'EMP':
+            base_estimator = EmpiricalCovariance(assume_centered=True)
+            est_str = 'emp_cov'
+        elif estimator == 'LW':
+            base_estimator = LedoitWolf(assume_centered=True)
+            est_str = 'LW'
+        try:
+            res = comp_opt_params(subject_dir, method=method,
                                   random_state=random_state, htree=TREE,
-                                  alpha_tol=1e-1, h_tol=1e-1)
-            results['emp_cov']['hgl']['score'] = res[1][-1]
-            results['emp_cov']['hgl']['alpha'] = res[0]
-            results['emp_cov']['hgl']['h'] = res[2]
-
-            res = comp_opt_params(subject_dir[0], method='gl',
-                                  random_state=random_state,
-                                  alpha_tol=1e-1, h_tol=1e-1)
-            results['emp_cov']['gl']['score'] = res[1][-1]
-            results['emp_cov']['gl']['alpha'] = res[0]
-        if 'LW' in methods:
-            res = comp_opt_params(subject_dir[0], method='hgl',
-                                  random_state=random_state, htree=TREE,
-                                  base_estimator=LedoitWolf(
-                                      assume_centered=True),
-                                  alpha_tol=1e-1, h_tol=1e-1)
-            results['LW']['hgl']['score'] = res[1][-1]
-            results['LW']['hgl']['alpha'] = res[0]
-            results['LW']['hgl']['h'] = res[2]
-
-            res = comp_opt_params(subject_dir[0], method='gl',
-                                  random_state=random_state,
-                                  base_estimator=LedoitWolf(
-                                      assume_centered=True),
-                                  alpha_tol=1e-1, h_tol=1e-1)
-            results['LW']['gl']['score'] = res[1][-1]
-            results['LW']['gl']['alpha'] = res[0]
-    except ValueError:
-        return None
+                                  alpha_tol=alpha_tol, h_tol=h_tol,
+                                  base_estimator=base_estimator)
+            results[est_str][method]['score'] = res[1][-1]
+            results[est_str][method]['alpha'] = res[0]
+            results[est_str][method]['h'] = res[2]
+        except ValueError:
+            print('ValueError, skipping this entry for {} ({})'.format(
+                method, est_str))
     return results
 
 
