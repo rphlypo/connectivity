@@ -237,6 +237,7 @@ def compare_hgl_gl(subject_dir, random_state=None,
     # cache the function get_data_ so that no recomputation is required
     if get_data_ is None:
         get_data_ = mem.cache(get_data)
+    cross_val = mem.cache(cvl.cross_val)
     # ... and get the data
     subj_data = get_data_(subject_dir)
 
@@ -269,14 +270,14 @@ def compare_hgl_gl(subject_dir, random_state=None,
             base_estimator = EmpiricalCovariance(assume_centered=True)
         elif estimator == 'LW':
             base_estimator = LedoitWolf(assume_centered=True)
-        res = cvl.cross_val(X, y=X_samplinglabel,
-                            X_test=Xtest, y_test=Xtest_samplinglabel,
-                            method=method, n_iter=1,
-                            train_size=.9, test_size=.05, retest_size=.2,
-                            n_jobs=min({N_JOBS, 10}), htree=HTREE,
-                            random_state=random_state,
-                            base_estimator=base_estimator,
-                            tol=1e-3, ips_flag=True)
+        res = cross_val(X, y=X_samplinglabel,
+                        X_test=Xtest, y_test=Xtest_samplinglabel,
+                        method=method, n_iter=1,
+                        train_size=.9, test_size=.05, retest_size=.2,
+                        n_jobs=min({N_JOBS, 10}), htree=HTREE,
+                        random_state=random_state,
+                        base_estimator=base_estimator,
+                        tol=1e-3, ips_flag=True)
         results[estimator][method]['score'] = res[1][-1]
         results[estimator][method]['alpha'] = res[0]
         if method == 'hgl':
