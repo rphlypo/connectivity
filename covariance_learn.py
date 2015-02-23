@@ -2,24 +2,30 @@ import logging
 reload(logging)
 # import sys
 import numpy as np
-import sklearn.utils.extmath
 import copy
 import numbers
 
 from scipy.ndimage.measurements import mean as label_mean
 from scipy.special import gamma as gamma_func
 from scipy import linalg
-
-from htree import HTree
 from sklearn.base import clone
 from sklearn.covariance.empirical_covariance_ import EmpiricalCovariance
+import sklearn.utils.extmath
 from functools import partial
-
 from joblib import Parallel, delayed
 
+from htree import HTree
+from htree import _check_htree
+
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 console = logging.StreamHandler()
-# logger.addHandler(logging.StreamHandler(sys.stderr))
+console.setLevel(logging.INFO)
+logger.addHandler(console)
+fh = logging.FileHandler('cvl.log')
+fh.setLevel(logging.DEBUG)
+logger.addHandler(fh)
+
 fast_logdet = sklearn.utils.extmath.fast_logdet
 
 
@@ -112,7 +118,8 @@ class GraphLasso(EmpiricalCovariance):
 
         """
         # compute empirical covariance of the test set
-        if self.score_norm != 'loglikelihood':
+        if (self.score_norm != 'loglikelihood' and
+                self.score_norm is not None):
             return self._error_norm(X_test, norm=self.score_norm)
         else:
             test_cov = self.base_estimator_.fit(X_test).covariance_
@@ -300,14 +307,7 @@ class HierarchicalGraphLasso(GraphLasso):
     def fit(self, X, y=None, **kwargs):
         S = self._X_to_cov(X)
 
-        if hasattr(self.htree, '__iter__'):
-            self.htree_ = HTree(self.htree)
-            # {htree}._update() is ok for small trees, otherwise use on-the-fly
-            # evaluation with {node}._get_node_values() at each node call
-        elif isinstance(self.htree, HTree):
-            self.htree_ = self.htree
-        else:
-            raise TypeError("htree must be an iterable or a HTree object")
+        self.htree_ = _check_htree(self.htree)
         precision_, split_precision_, var_gap_, dual_gap_, f_vals_, rho_ =\
             _admm_hgl2(S, self.htree_, self.alpha, rho=self.rho, tol=self.tol,
                        mu=self.mu, max_iter=self.max_iter,
@@ -349,11 +349,8 @@ def _admm_gl(S, alpha, rho=1., tau_inc=2., tau_decr=2., mu=None, tol=1e-6,
         try:
             Z_old = Z.copy()
             # closed form optimization for X
-            eigvals, eigvecs = linalg.eigh(rho * (Z + U) - S)
-            eigvals /= 2
-            eigvals = (eigvals + (eigvals ** 2 + rho) ** (1. / 2)) / rho
-            X = eigvecs.dot(np.diag(eigvals).dot(eigvecs.T))
-            func_val = -np.sum(np.log(eigvals)) + np.sum(S * X)
+            X, eig_vals = _update_X(S, Z, -U, rho)
+            func_val = -np.sum(np.log(eig_vals)) + np.sum(S * X)
             func_val += np.sum(alpha * np.abs(X))
             # proximal operator for Z: soft thresholding
             tmp = np.abs(X - U) - alpha / rho
@@ -371,7 +368,7 @@ def _admm_gl(S, alpha, rho=1., tau_inc=2., tau_decr=2., mu=None, tol=1e-6,
             if mu is not None:
                 rho = _update_rho(U, rho, r_[-1], s_[-1],
                                   mu, tau_inc, tau_decr)
-                rho_.append(rho)
+            rho_.append(rho)
             iter_count += 1
             if (_check_convergence(X, Z, Z_old, U, rho, tol_abs=tol) or
                     iter_count > max_iter):
@@ -399,7 +396,7 @@ def _admm_ips(S, support, rho=1., tau_inc=2., tau_decr=2., mu=None, tol=1e-6,
     """
     p = S.shape[0]
     dof = np.count_nonzero(support)
-    Z = (1 + rho) * np.identity(p)
+    Z = (1 + rho) / rho * np.identity(p)
     U = np.zeros((p, p))
     if Xinit is None:
         X = np.identity(p)
@@ -417,9 +414,7 @@ def _admm_ips(S, support, rho=1., tau_inc=2., tau_decr=2., mu=None, tol=1e-6,
         try:
             Z_old = Z.copy()
             # closed form optimization for X
-            eigvals, eigvecs = linalg.eigh(rho * (Z - U) - S)
-            eigvals = (eigvals + (eigvals ** 2 + rho) ** (1. / 2)) / rho
-            X = eigvecs.dot(np.diag(eigvals).dot(eigvecs.T))
+            X, _ = _update_X(S, Z, U, rho)
             # proximal operator for Z: projection on support
             Z = support * (X + U)
             # update scaled dual variable
@@ -471,7 +466,7 @@ def _admm_hgl2(S, htree, alpha, rho=1., tau_inc=1.1, tau_decr=1.1, mu=None,
     iter_count = 0
     # this returns an ordered list from leaves to root nodes
     nodes_levels = htree.root_.get_descendants()
-    max_level = max([lev for (_, lev) in nodes_levels])
+    max_level = htree.get_depth()
     # all leave node values, do not sort (would break data representation)
     node_list = np.array(htree.root_.value_)
 
@@ -498,12 +493,9 @@ def _admm_hgl2(S, htree, alpha, rho=1., tau_inc=1.1, tau_decr=1.1, mu=None,
         try:
             Z_old = Z.copy()
             # closed form optimization for X
-            eigvals, eigvecs = linalg.eigh(rho * (Z - U) - S)
-            eigvals /= 2
-            eigvals = (eigvals + (eigvals ** 2 + rho) ** (1. / 2)) / rho
-            X = eigvecs.dot(np.diag(eigvals).dot(eigvecs.T))
+            X, eig_vals = _update_X(S, Z, U, rho)
             # smooth functional score
-            func_val = -np.sum(np.log(eigvals)) + np.sum(X * S)
+            func_val = -np.sum(np.log(eig_vals)) + np.sum(X * S)
             # proximal operator for Z: block norm soft thresholding
             Z = U + X
 
@@ -548,6 +540,14 @@ def _admm_hgl2(S, htree, alpha, rho=1., tau_inc=1.1, tau_decr=1.1, mu=None,
             return X, Z, r_, s_, f_vals_, rho_
 
 
+def _update_X(S, Z, U, rho):
+    eig_vals, eig_vecs = linalg.eig(rho * (Z - U) - S)
+    eig_vals = np.real(eig_vals / 2.)
+    eig_vecs = np.real(eig_vecs)
+    eig_vals = (eig_vals + (eig_vals ** 2 + rho) ** (1. / 2)) / rho
+    return (eig_vecs * eig_vals).dot(eig_vecs.T), eig_vals
+
+
 def _check_convergence(X, Z, Z_old, U, rho, tol_abs=1e-12, tol_rel=1e-6):
     p = np.size(U)
     n = np.size(X)
@@ -558,7 +558,7 @@ def _check_convergence(X, Z, Z_old, U, rho, tol_abs=1e-12, tol_rel=1e-6):
             np.linalg.norm(Z - Z_old) < tol_dual)
 
 
-def _update_rho(U, rho, r, s, mu, tau_inc, tau_decr):
+def _update_rho(U, rho, r, s, mu, tau_inc=2., tau_decr=2.):
     if r > mu * s:
         rho *= tau_inc
         U /= tau_inc
@@ -593,13 +593,13 @@ def _cov_2_corr(covariance):
 
 
 def cross_val(X, y=None, X_test=None, y_test=None, method='gl', alpha_tol=0.01,
-              verbose=0, n_jobs=1, ips_flag=False, htree=None, score_norm="KL",
-              h=None, **kwargs):
+              verbose=0, n_jobs=1, ips_flag=False, htree=None, score_norm=None,
+              h=None, base_estimator=None, tol=1e-4, **kwargs):
     """
     if one has a theoretical optimal covariance or precision matrix
     rather than testing data, one may use the next trick
 
-        Suppose the theoretical optimum is Theta
+        Suppose the theoretical optimum (covariance matrix) is Theta
 
         >>> eig_vals, eig_vecs = scipy.linalg.eig(Theta)
         >>> X_test = np.sqrt(eig_vals[:, np.newaxis]) * eigvecs.T
@@ -611,16 +611,22 @@ def cross_val(X, y=None, X_test=None, y_test=None, method='gl', alpha_tol=0.01,
 
         for which X_test.T.dot(X_test) / p = Theta
 
-        use the function cov_2_data
+        use the function _cov_2_data
+
+        One should pay attention, though, since the estimator should be
+        EmpiricalCovariance with `assume_centered` = `True`, since any biased
+        estimator will use n=p as the number of samples and hence heavily
+        bias the solution.
     """
     # logging.ERROR is at level 40
     # logging.WARNING is at level 30, everything below is low priority
     # logging.INFO is at level 20, verbose 10
     # logging.DEBUG is at level 10, verbose 20
-    logger.setLevel(logging.WARNING - verbose)
+    # logger.setLevel(logging.WARNING - verbose)
 
-    # kwargs contains n_test, n_train, random_state, n_iter
-    shuffle_split = get_indices(X, y, X_test, y_test, **kwargs)
+    # kwargs contains n_train, n_test, n_retest, random_state, n_iter
+    shuffle_split = _get_indices(X, y, X_test, y_test, **kwargs)
+    logger.debug("prepared indices")
 
     # selecting the method for learning the covariance method
     if method == 'gl':
@@ -629,99 +635,180 @@ def cross_val(X, y=None, X_test=None, y_test=None, method='gl', alpha_tol=0.01,
         cov_learner = HierarchicalGraphLasso
     elif method == 'ips':
         cov_learner = IPS
+    logger.debug("chose learner : {}".format(cov_learner))
+    logger.debug("chose base_estimator : {}".format(base_estimator))
+
+    # get max_level ifi htree is given
+    if htree is not None:
+        max_level = HTree(htree).get_depth()
 
     # initialisation
+    if base_estimator is None:
+        base_estimator = EmpiricalCovariance(assume_centered=True)
+        print 'Chose EmpiricalCovariance as base_estimator'
     alphas = np.linspace(0., 1., 5)
     h_ = np.zeros((5,))
     score = -np.ones((5,)) * np.inf  # scores at -infinity, lower bound
     score_ = list()
+    logger.debug("ended initialisations")
     while True:
         try:
             logger.info("refining alpha grid to interval [{}, {}]".format(
                 alphas[0], alphas[-1]))
             for (ix, alpha) in enumerate(alphas):
-                if ix in [0, 2, 4] and not np.isinf(score[ix]):
+                if not np.isinf(score[ix]):
                     logger.info("alpha[{}] = {}, already computed".format(
                         ix, alpha))
                     continue
                 logger.info("computing for alpha[{}] = {}".format(ix, alpha))
-                if method != 'hgl' or h is not None:
+                if method == 'gl':
                     cov_learner_ = cov_learner(alpha=alpha,
                                                score_norm=score_norm,
-                                               **kwargs)
+                                               tol=tol, mu=10.,
+                                               base_estimator=base_estimator)
+                    logger.debug("start optimisation")
                     res_ = Parallel(n_jobs=n_jobs)(delayed(_eval_cov_learner)(
-                        X, X_test, train_ix, test_ix, cov_learner_, ips_flag)
-                        for train_ix, test_ix in shuffle_split)
+                        X, X_test, cov_learner_, train_ix, test_ix, retest_ix,
+                        ips_flag)
+                        for train_ix, test_ix, retest_ix in shuffle_split)
+                    score[ix] = np.mean(np.array(res_))
+                elif h is not None:
+                    afunc = partial(_alpha_func, h=h, max_level=max_level)
+                    cov_learner_ = cov_learner(alpha=alpha,
+                                               htree=htree,
+                                               alpha_func=afunc,
+                                               score_norm=score_norm,
+                                               tol=tol, mu=10.,
+                                               base_estimator=base_estimator)
+                    logger.debug("start optimisation")
+                    res_ = Parallel(n_jobs=n_jobs)(delayed(_eval_cov_learner)(
+                        X, X_test, cov_learner_, train_ix, test_ix, retest_ix,
+                        ips_flag)
+                        for train_ix, test_ix, retest_ix in shuffle_split)
                     score[ix] = np.mean(np.array(res_))
                 else:
+                    logger.debug("start optimisation (h)")
                     h_opt, score_h = _compute_hopt(
-                        alpha, score_norm, X, X_test, shuffle_split, ips_flag,
-                        htree, n_jobs=n_jobs, **kwargs)
+                        alpha, score_norm, X, X_test, shuffle_split,
+                        htree, ips_flag=ips_flag, n_jobs=n_jobs, tol=tol,
+                        base_estimator=base_estimator)
                     h_[ix] = h_opt
                     score[ix] = score_h
-
+            # TODO: better strategy when on boundary ?
             max_ix = min(max(np.argmax(score), 1), 3)
+            score_.append(np.max(score))
+            alpha_opt = alphas[np.argmax(score)]
+            logger.info("score @ alpha = {} : {}".format(alphas, score))
+            logger.info("maximum score @ alpha = {}".format(alpha_opt))
             score[0] = score[max_ix - 1]
             score[4] = score[max_ix + 1]
             score[2] = score[max_ix]
-            score[1] = score[3] = -np.inf
+            score[1] = -np.inf
+            score[3] = -np.inf
             alphas = np.linspace(alphas[max_ix - 1], alphas[max_ix + 1], 5)
-            score_.append(np.max(score))
-            alpha_opt = alphas[np.argmax(score)]
-            h_opt = h[np.argmax(score)]
+            if method == 'hgl' and h is None:
+                h_opt = h_[np.argmax(score)]
             if alphas[4] - alphas[0] <= alpha_tol:
                 raise StopIteration
         except StopIteration:
-            if method != 'hgl' or h is not None:
+            if method == 'gl' or h is not None:
                 return alpha_opt, score_
             else:
                 return alpha_opt, score_, h_opt
 
 
 def _compute_hopt(alpha, score_norm, X, X_test, shuffle_split, htree,
-                  h_tol=0.01, n_jobs=1, ips_flag=True, **kwargs):
+                  h_tol=0.01, n_jobs=1, ips_flag=True, tol=1e-16,
+                  base_estimator=EmpiricalCovariance(assume_centered=True)):
+    """ grid search for the optimal parameter 'h' in hierarchical GraphLasso
+
+    Arguments:
+    ----------
+    alpha   : float
+        the penalisation parameter, we are doing a line search for h given
+        alpha
+
+    score_norm : string
+        any of the norms supported by the covariance learner
+
+    X   : numpy.ndarray of shape (n, p)
+        the training data
+
+    X_test : numpy.ndarray of shape (m, p)
+        the testing data
+
+    shuffle_split : list of couples of tuples
+        each tuple is an index set, the first of the couple is used for
+        indexing data in X, the second in X_test
+
+    htree : a hierarchical tree object, or compatible list
+        the hierarchical tree topology
+
+    htol : float, 0. < htol <= 1.
+        iterations stop when this tolerance is reached for h
+
+    n_jobs : integer
+        number of (embarassingly) parallel jobs
+
+    ips_flag : boolean
+        whether maximum likelihood is on the full model or merely support
+        set matching (ips_flag=True)
+
+    Returns:
+    --------
+    h_opt : float, 0. <= h_opt <= 1.
+        optimal parameter found during line search
+
+
+    score : float
+        the (mean) score associated with h_opt and alpha
+    """
     # init
     scoreh = -np.ones((5,)) * np.inf
-    hs = np.linspace(0., 1., 5)
-    if hasattr(htree, '__iter__'):
-        htree = HTree(htree)
-    max_level = max([lev for (_, lev) in htree.root_.get_descendants()])
+    hs = np.linspace(0.,1., 5)
+    max_level = HTree(htree).get_depth()
     while True:
         try:
-            logger.info("\trefining h-grid to interval " +
-                        "[{}, {}]".format(hs[0], hs[-1]))
+            if alpha > 0.:
+                logger.info("\trefining h-grid to interval " +
+                            "[{}, {}]".format(hs[0], hs[-1]))
             for (ixh, h) in enumerate(hs):
                 if ixh in [0, 2, 4] and not np.isinf(scoreh[ixh]):
                     continue
                 cov_learner_h = HierarchicalGraphLasso(
-                    alpha=alpha, score_norm=score_norm,
+                    htree, alpha, score_norm=score_norm, mu=10.,
                     alpha_func=partial(_alpha_func, h=h,
                                        max_level=max_level),
-                    **kwargs)
+                    tol=tol, base_estimator=base_estimator)
                 res_h = Parallel(n_jobs=n_jobs)(
                     delayed(_eval_cov_learner)(
-                        X, X_test, train_ix, test_ix,
-                        cov_learner_h, ips_flag)
-                    for train_ix, test_ix in shuffle_split)
+                        X, X_test, cov_learner_h, train_ix, test_ix,
+                        retest_ix, ips_flag)
+                    for train_ix, test_ix, retest_ix in shuffle_split)
                 scoreh[ixh] = np.mean(np.array(res_h))
+                logger.info("\t\tscore (alpha = {}, h = {}) : {}".format(
+                            alpha, h, scoreh[ixh]))
+                if alpha == 0.:
+                    return 0., scoreh[ixh]
             max_ixh = min(max(np.argmax(scoreh), 1), 3)
+            h_opt = hs[np.argmax(scoreh)]
             scoreh[0] = scoreh[max_ixh - 1]
             scoreh[4] = scoreh[max_ixh + 1]
             scoreh[2] = scoreh[max_ixh]
-            scoreh[1] = scoreh[3] = -np.inf
+            scoreh[1] = -np.inf
+            scoreh[3] = -np.inf
             hs = np.linspace(hs[max_ixh - 1],
                              hs[max_ixh + 1], 5)
             if hs[4] - hs[0] <= h_tol:
                 raise StopIteration
         except StopIteration:
-            h_opt = hs[np.argmax(scoreh)]
             return h_opt, np.max(scoreh)
 
 
-def get_indices(X, y, X_test, y_test, n_iter=10,
-                train_size=.9, test_size=.1,
-                random_state=None):
-    """ get the shuffle split indices for training and testing
+def _get_indices(X, y, X_test, y_test, n_iter=10,
+                 train_size=.2, test_size=.2, retest_size=None,
+                 random_state=None, **kwargs):
+    """ get the shuffle split indices for training, testing, and retesting
     """
     from sklearn import cross_validation
     # depending on the presence of the X_test variable, train and test
@@ -729,11 +816,12 @@ def get_indices(X, y, X_test, y_test, n_iter=10,
     if X_test is None:
         test_size_ = test_size
         train_size_ = train_size
+        retest_size_ = None
         # no unnecessary data copy here --> by data reference !
         X_test = X
     else:
         test_size_ = None
-        train_size_ = None
+        train_size_ = test_size
     # using stratified shuffle split if y is given, shuffle split otherwise
     # training data
     if y is not None:
@@ -744,43 +832,64 @@ def get_indices(X, y, X_test, y_test, n_iter=10,
         shuffle_split = cross_validation.ShuffleSplit(
             X.shape[0], n_iter=n_iter, train_size=train_size,
             test_size=test_size_, random_state=random_state)
-    # testing data
-    if y_test is not None and test_size_ is not None:
+    # (re)testing data different from training data
+    if y_test is not None:
         shuffle_split_test = cross_validation.StratifiedShuffleSplit(
-            y_test, n_iter=n_iter, test_size=test_size, train_size=train_size_,
-            random_state=random_state)
-    elif test_size_ is not None:
+            y_test, n_iter=n_iter, test_size=retest_size,
+            train_size=train_size_, random_state=random_state)
+    elif test_size_ is None:
         shuffle_split_test = cross_validation.ShuffleSplit(
-            X_test.shape[0], n_iter=n_iter, test_size=test_size,
+            X_test.shape[0], n_iter=n_iter, test_size=retest_size,
             train_size=train_size_, random_state=random_state)
 
     # allow for a unique call to retrieve train and test indices
-    if test_size_ is not None:
-        shuffle_split = zip(*[(train[0], test[1])
-                              for train, test in
-                              zip(shuffle_split, shuffle_split_test)])
+    # test[0] corresponds to test
+    # test[1] corresponds to re-test
+    if test_size_ is None and retest_size is not None:
+        shuffle_split = [(train[0], test[0], test[1]) for train, test in
+                         zip(shuffle_split, shuffle_split_test)]
+    elif test_size_ is None:
+        shuffle_split = [(train[0], test[0], None) for train, test in
+                         zip(shuffle_split, shuffle_split_test)]
+    else:
+        shuffle_split = [(train, test, None) for train, test in shuffle_split]
+    return shuffle_split
 
 
-def _eval_cov_learner(X, X_test, train_ix, test_ix, cov_learner, ips_flag=True):
-    X_train = X[train_ix, ...]
-    X_test = X_test[test_ix, ...]
-    alpha_max_ = alpha_max(X_train)
+def _eval_cov_learner(X, X_test, cov_learner,
+                      train_ix, test_ix, retest_ix=None, ips_flag=True):
+    X_train_ = X[train_ix, ...]
+    X_test_ = X_test[test_ix, ...]
+    if retest_ix is not None:
+        X_retest_ = X_test[retest_ix, ...]
     # learn a sparse covariance model
     cov_learner_ = clone(cov_learner)
-    cov_learner_.__setattr__('alpha', cov_learner_.alpha * alpha_max_)
+    if cov_learner_.alpha > 0.:
+        alpha_max_ = alpha_max(X_train_,
+                               base_estimator=cov_learner.base_estimator)
+        cov_learner_.__setattr__('alpha', cov_learner_.alpha * alpha_max_)
     if not ips_flag:
-        score = cov_learner_.fit(X_train).score(X_test)
+        logger.debug("start learning precision matrix")
+        score = cov_learner_.fit(X_train_).score(X_test_)
     elif cov_learner.score_norm != "ell0":
         # dual split variable contains exact zeros!
-        aux_prec = cov_learner_.fit(X_train).auxiliary_prec_
-        mask = np.abs(aux_prec) > machine_eps(0.)
-        ips = IPS(support=mask, score_norm=cov_learner_.score_norm)
+        logger.info("\t\tlearning precision matrix")
+        logger.debug("required tolerance = %f" % cov_learner_.tol)
+        aux_prec = cov_learner_.fit(X_train_).auxiliary_prec_
+        mask = np.abs(aux_prec) >= machine_eps(1.)
+        logger.info("\t\tstarting and scoring IPS estimate")
+        ips = IPS(support=mask, score_norm=cov_learner_.score_norm,
+                  base_estimator=cov_learner.base_estimator,
+                  tol=cov_learner.tol)
         # on the mask, fit and score the testing dataset in the likelihood sense
-        score = ips.fit(X_test).score(X_test)
+        if retest_ix is not None:
+            score = ips.fit(X_test_).score(X_retest_)
+        else:
+            score = ips.fit(X_train_).score(X_test_)
     else:
         raise ValueError('ell0 scoring in CV_loop and IPS are incompatible')
 
-    # make scores maximal at optimum
+    # make score maximal at optimum
     if cov_learner_.score_norm not in {'loglikelihood', None}:
         score *= -1.
     return score

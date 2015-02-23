@@ -138,11 +138,13 @@ class HTree(object):
         explore the tree by starting to interrogate the node root_ for its
         children, etc.
         """
-        self._update()
-        nodes = []
-        for (node, _) in _get_node_list(self.root_):
-            nodes.append(node)
-        return nodes
+        return [node for (node, _) in _get_node_list(self.root_)]
+
+    def get_depth(self):
+        if not hasattr(self, 'depth_'):
+            self.depth_ = max([lev for (_, lev) in
+                               _get_node_list(self.root_)])
+        return self.depth_
 
 
 class HierarchicalKMeans(KMeans):
@@ -197,3 +199,13 @@ def hierarchical_tree(arity=8, depth=3, rng=None):
     else:
         return [hierarchical_tree(arity=arity, depth=depth - 1, rng=rng)
                 for _ in range(arity)]
+
+
+def _check_htree(htree):
+    if hasattr(htree, '__iter__'):
+        return HTree(htree)
+    elif isinstance(htree, HTree):
+        return htree
+    else:
+        raise TypeError('object can not be converted to an HTree object')
+

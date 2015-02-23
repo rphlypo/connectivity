@@ -7,7 +7,7 @@ import socket
 
 from multiprocessing import cpu_count
 from getpass import getuser
-
+import copy
 import numpy as np
 from joblib import Memory, Parallel, delayed
 
@@ -18,6 +18,7 @@ from sklearn.cluster import MiniBatchKMeans, KMeans
 from sklearn.utils import check_random_state
 import nibabel
 import covariance_learn as cvl
+reload(cvl)
 
 from sklearn.covariance import LedoitWolf
 from sklearn.covariance import EmpiricalCovariance
@@ -30,20 +31,26 @@ from nilearn import masking
 from nilearn import signal
 
 import htree
+reload(htree)
 
 if getuser() == 'rphlypo' and socket.gethostname() != 'drago':
     ROOT_DIR = '/volatile'
+    N_JOBS = 2
+elif getuser() == 'phlypor' and socket.gethostname() == 'desktop-315':
+    ROOT_DIR = '/localdata/phlypor'
+    N_JOBS = 2
 else:
     ROOT_DIR = '/storage'
+    N_JOBS = min(cpu_count() - 4, 36)
 
 
 subject_dirs = sorted(glob.glob(
     os.path.join(ROOT_DIR, 'data/HCP/S500-?/' + ('[0-9]' * 6) +
                  '/MNINonLinear/Results')))
 
-N_JOBS = min(cpu_count() - 4, 36)
-
-TREE = htree.construct_tree(obj=False, rng=0)
+# a 8-ary tree is constructed as a list, because otherwise the tree is
+# not a 'constant' for the caching
+HTREE = htree.construct_tree(obj=False, rng=0)
 
 
 def out_brain_confounds(epi_img, mask_img):
@@ -146,6 +153,8 @@ if getuser() == 'rphlypo' and socket.gethostname() == 'is151225':
     mem = Memory(cachedir='/volatile/workspace/tmp/connectivity_joblib')
 elif socket.gethostname() == 'drago' and getuser() == 'rphlypo':
     mem = Memory(cachedir='/storage/workspace/rphlypo/hierarchical/joblib')
+elif socket.gethostname() == 'desktop-315' and getuser() == 'phlypor':
+    mem = Memory(cachedir='/localdata/phlypor/workspace')
 else:
     mem = Memory(cachedir='/storage/workspace/tmp/gael_joblib')
 
@@ -182,73 +191,11 @@ def do_k_means(data, n_clusters):
     return k_means.labels_
 
 
-def compute_optimal_params(subject_dir, method='hgl', sess_ix=None,
-                           random_state=None, get_data_=None, **kwargs):
-    """ compute the optimal cross-validated parameters alpha and h
-
-
-    This is simply a wrapper for the cross_val method of covariance_learn.py
-
-    Arguments:
-    ----------
-    subject_dir : string
-        subject directory where the data resides
-
-    method      : string
-        the method used, either hierarchial ('hgl') or plain ('gl')
-        graphical lasso
-
-    sess_ix     : integer (1 or 2)
-        if a specific session is envisaged, one may specify it here
-        the complementary session is used for validation
-
-    random_state : random state
-        if perfect reproducibility is required (for instance when caching)
-        then a random state can be specified here
-
-    get_data_   : function reference
-        this could be a cached function, should return a matrix that is
-        compatible with [time x ROI]
-
-    all keyword arguments are simply a pass-through to the cross_val
-    method of covariance_learn.py
-
-    Returns
-    """
-    randgen = check_random_state(random_state)
-    # cache the function get_data_ so that no recomputation is required
-    if get_data_ is None:
-        get_data_ = mem.cache(get_data)
-    subj_data = get_data_(subject_dir)
-
-    # if we do not have two session, each with two scan_modes,
-    # something must have gone wrong !
-    if len(subj_data) < 4:
-        raise ValueError('Incomplete data')
-    # random session for training
-    if sess_ix is None:
-        sess_ix = randgen.randint(2) + 1
-    X = np.concatenate([d["data"] for d in subj_data
-                        if d["session"] == sess_ix], axis=0)
-    xlen = [d["data"].shape[0] for d in subj_data if d["session"] == sess_ix]
-    x_samplinglabel = np.zeros((xlen[0] + xlen[1],), dtype=np.int)
-    x_samplinglabel[xlen[0]:] += 1
-    # complementary session
-    Y = np.concatenate([d["data"] for d in subj_data
-                        if d["session"] == 3 - sess_ix], axis=0)
-    ylen = [d["data"].shape[0] for d in subj_data
-            if d["session"] == 3 - sess_ix]
-    y_samplinglabel = np.zeros((ylen[0] + ylen[1],), dtype=np.int)
-    y_samplinglabel[xlen[0]:] += 1
-    return cvl.cross_val(X, y=Y, method=method, n_iter=1,
-                         optim_h=True, train_size=.99, test_size=0.01,
-                         n_jobs=min({N_JOBS, 10}), random_state=random_state,
-                         tol=1e-3, **kwargs)
-
 
 def compare_hgl_gl(subject_dir, random_state=None,
-                   estimators=['EMP'], methods=['hgl', 'gl'],
-                   alpha_tol=1e-1, h_tol=1e-1):
+                   estimators=['EMP', 'LW'], methods=['hgl', 'gl'],
+                   alpha_tol=1e-1, h_tol=1e-1, get_data_=None,
+                   sess_ix=None):
     """ compare results from hierarchical and plain graphical lasso
 
     using a given base_estimator for the covariance (empirical or
@@ -277,41 +224,77 @@ def compare_hgl_gl(subject_dir, random_state=None,
     its main goal is to cache this function and prepare the parameters
     for the different settings (estimators and methods)
     """
+    # initialise the data structure containing the results
     if random_state == 'subject':
         random_state = int(split_path(subject_dir)[-3])
-        print 'random_state = {}'.format(random_state)
-    # randgen = check_random_state(random_state)
-    results_ = {'hgl': {'score': None, 'alpha': None, 'h': None},
-                'gl': {'score': None, 'alpha': None}}
-    results = {'LW': results_, 'emp_cov': results_}
-    comp_opt_params = mem.cache(compute_optimal_params)
-    if not hasattr(subject_dir, '__iter__'):
-        subject_dir = [subject_dir]
+    results = dict()
+    results['LW'] = {'hgl': {'score': None, 'alpha': None, 'h': None},
+                     'gl': {'score': None, 'alpha': None}}
+    results['EMP'] = {'hgl': {'score': None, 'alpha': None, 'h': None},
+                      'gl': {'score': None, 'alpha': None}}
+    # initialise the random generator
+    randgen = check_random_state(random_state)
+    # cache the function get_data_ so that no recomputation is required
+    if get_data_ is None:
+        get_data_ = mem.cache(get_data)
+    # ... and get the data
+    subj_data = get_data_(subject_dir)
+
+    # if we do not have two session, each with two scan_modes,
+    # something must have gone wrong !
+    if len(subj_data) < 4:
+        return results
+        # raise ValueError('Incomplete data')
+    # pick a random session for training
+    if sess_ix is None:
+        sess_ix = randgen.randint(2) + 1
+    X = np.concatenate([d["data"] for d in subj_data
+                        if d["session"] == sess_ix], axis=0)
+    X_len = [d["data"].shape[0] for d in subj_data if d["session"] == sess_ix]
+    # create an indicator for LR / RL, so stratified sampling is possible
+    X_samplinglabel = np.zeros((X_len[0] + X_len[1],), dtype=np.int)
+    X_samplinglabel[X_len[0]:] = 1
+    # repeat for the complementary session
+    Xtest = np.concatenate([d["data"] for d in subj_data
+                            if d["session"] == 3 - sess_ix], axis=0)
+    Xtest_len = [d["data"].shape[0] for d in subj_data
+            if d["session"] == 3 - sess_ix]
+    Xtest_samplinglabel = np.zeros((Xtest_len[0] + Xtest_len[1],),
+                                   dtype=np.int)
+    Xtest_samplinglabel[Xtest_len[0]:] = 1
+
+    # start looping over methods and estimators
     for estimator, method in itertools.product(estimators, methods):
         if estimator == 'EMP':
             base_estimator = EmpiricalCovariance(assume_centered=True)
-            est_str = 'emp_cov'
         elif estimator == 'LW':
             base_estimator = LedoitWolf(assume_centered=True)
-            est_str = 'LW'
-        try:
-            res = comp_opt_params(subject_dir, method=method,
-                                  random_state=random_state, htree=TREE,
-                                  alpha_tol=alpha_tol, h_tol=h_tol,
-                                  base_estimator=base_estimator)
-            results[est_str][method]['score'] = res[1][-1]
-            results[est_str][method]['alpha'] = res[0]
-            results[est_str][method]['h'] = res[2]
-        except ValueError:
-            print('ValueError, skipping this entry for {} ({})'.format(
-                method, est_str))
+        res = cvl.cross_val(X, y=X_samplinglabel,
+                            X_test=Xtest, y_test=Xtest_samplinglabel,
+                            method=method, n_iter=1,
+                            train_size=.9, test_size=.05, retest_size=.2,
+                            n_jobs=min({N_JOBS, 10}), htree=HTREE,
+                            random_state=random_state,
+                            base_estimator=base_estimator,
+                            tol=1e-3, ips_flag=True)
+        results[estimator][method]['score'] = res[1][-1]
+        results[estimator][method]['alpha'] = res[0]
+        if method == 'hgl':
+            results[estimator][method]['h'] = res[2]
     return results
 
 
-def run_analysis(subject_dirs=subject_dirs, **kwargs):
-    results = Parallel(n_jobs=10)(delayed(compare_hgl_gl)(
-        subject_dir=sd, random_state='subject', **kwargs)
-        for sd in subject_dirs)
+def run_analysis(subject_dirs=subject_dirs, n_jobs=N_JOBS,
+                 random_state="subject", **kwargs):
+    """ starting point for the analysis, allows for subject parallelisation
+    """
+    if len(subject_dirs) > 1:
+        results = Parallel(n_jobs=N_JOBS)(delayed(compare_hgl_gl)(
+            subject_dir=sd, random_state=random_state, **kwargs)
+            for sd in subject_dirs)
+    else:
+        results = compare_hgl_gl(subject_dir=subject_dirs[0],
+                                 random_state=random_state, **kwargs)
     return results
 
 
@@ -342,7 +325,7 @@ if __name__ == "__main__":
     cluster_map = masker.inverse_transform(labels)
     cluster_map.to_filename('labels_level_1.nii')
 
-    # Scheme for numbering a global hierarchi: 4 level, first one is at x000
+    # Scheme for numbering a global hierarchy: 4 levels, first one at x000
     labels *= 1000
     for level in [2, 3, 4]:
         for label in np.unique(labels):
